@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>半導体工場シミュレーター</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='3' width='10' height='10' rx='1.5' fill='%23ffd54f'/%3E%3Crect x='6' y='6' width='4' height='4' fill='%2312151c'/%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #12151c;
+      --panel: #1b2029;
+      --panel2: #232a36;
+      --border: #333c4d;
+      --text: #dbe2ee;
+      --dim: #8b96a8;
+      --accent: #ffd54f;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
+      font-size: 14px;
+      display: flex;
+      justify-content: center;
+      padding: 12px;
+    }
+    #app { display: flex; gap: 12px; align-items: flex-start; }
+    #stage { position: relative; }
+    canvas {
+      background: #161a22;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      display: block;
+      cursor: crosshair;
+    }
+    #toast {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      background: rgba(20, 24, 32, 0.92);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 14px;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.25s;
+      white-space: nowrap;
+    }
+    #panel {
+      width: 320px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .box {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+    }
+    .box h2 {
+      font-size: 12px;
+      color: var(--dim);
+      font-weight: 600;
+      margin-bottom: 8px;
+      letter-spacing: 0.05em;
+    }
+    #palette { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+    #palette button, .btn {
+      background: var(--panel2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 6px;
+      padding: 7px 8px;
+      cursor: pointer;
+      font-size: 13px;
+      text-align: left;
+    }
+    #palette button:hover, .btn:hover { border-color: #5a687e; filter: brightness(1.15); }
+    #palette button.active, .btn.active { border-color: var(--accent); background: #3a3320; }
+    #palette button .sw {
+      display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px;
+    }
+    #palette button small { color: var(--dim); display: block; margin-left: 16px; }
+    .statrow { display: flex; justify-content: space-between; padding: 2px 0; }
+    .statrow b { font-variant-numeric: tabular-nums; }
+    #recipe .step {
+      display: flex; align-items: center; gap: 8px; padding: 3px 0;
+      font-size: 13px;
+    }
+    #recipe .step .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
+    #recipe .step .cnt {
+      margin-left: auto; font-variant-numeric: tabular-nums;
+      color: var(--dim); min-width: 60px; text-align: right;
+    }
+    #recipe .step .bar {
+      height: 6px; background: #2c3442; border-radius: 3px; width: 70px; overflow: hidden; flex: none;
+    }
+    #recipe .step .bar i { display: block; height: 100%; background: var(--accent); }
+    #controls { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+    input[type=range] { width: 100%; }
+    .dim { color: var(--dim); font-size: 12px; }
+    #machineinfo .btn { margin-top: 6px; margin-right: 6px; text-align: center; }
+    .btn:disabled { opacity: 0.4; cursor: default; }
+    .btn.danger { border-color: #7e4040; }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="stage">
+      <canvas id="game"></canvas>
+      <div id="toast"></div>
+    </div>
+    <div id="panel"></div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>
