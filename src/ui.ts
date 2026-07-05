@@ -5,6 +5,7 @@ import { MACHINE_DEFS, RECIPE, MAX_FLEET, TILE } from './config';
 import type { MachineKind } from './config';
 import { Game } from './sim';
 import type { ViewState, Tool } from './render';
+import { saveToLocal, clearLocal, exportFile, importFile } from './save';
 
 interface UIOpts {
   root: HTMLElement;
@@ -34,6 +35,8 @@ export function createUI(opts: UIOpts) {
         <span class="stat"><label>廃棄</label><b id="stScrap">0</b></span>
         <span class="stat"><label>スループット</label><b id="stTp">0.0<i>/分</i></b></span>
         <span class="stat"><label>歩留まり</label><b id="stYield">--</b></span>
+        <span class="stat"><label>搬送待ち</label><b id="stWait">--</b></span>
+        <span class="stat" id="stBrokenWrap" hidden><label>故障</label><b id="stBroken" style="color:#cc4f44">0</b></span>
         <span class="stat oht">
           <label>OHT</label>
           <button id="ohtMinus" title="保有台数を減らす">−</button>
@@ -51,7 +54,18 @@ export function createUI(opts: UIOpts) {
         <span class="seg" id="speedSeg">
           <button data-speed="1" class="on">1x</button><button data-speed="2">2x</button><button data-speed="4">4x</button>
         </span>
+        <button id="heatBtn" class="tbtn" title="渋滞ヒートマップ (H)">渋滞</button>
         <button id="flowBtn" class="tbtn on" title="工程フロー表示 (F)">工程</button>
+        <span class="menuwrap">
+          <button id="dataBtn" class="tbtn" title="セーブ/ロード">データ</button>
+          <div id="dataPop" hidden>
+            <button id="saveNowBtn">いますぐ保存</button>
+            <button id="exportBtn">書き出し (JSON)</button>
+            <button id="importBtn">読み込み (JSON)</button>
+            <button id="newBtn" class="danger">新規工場</button>
+            <p class="dim">10秒ごとに自動保存されます</p>
+          </div>
+        </span>
       </div>
     </header>
     <aside id="flow"></aside>
@@ -157,6 +171,50 @@ export function createUI(opts: UIOpts) {
   };
   flowBtn.addEventListener('click', toggleFlow);
 
+  const heatBtn = $('#heatBtn') as HTMLButtonElement;
+  const toggleHeat = () => {
+    vs.showHeat = !vs.showHeat;
+    heatBtn.classList.toggle('on', vs.showHeat);
+  };
+  heatBtn.addEventListener('click', toggleHeat);
+
+  // ---- データメニュー(セーブ/ロード) ----
+  const dataPop = $('#dataPop');
+  $('#dataBtn').addEventListener('click', () => {
+    dataPop.hidden = !dataPop.hidden;
+  });
+  document.addEventListener('mousedown', (e) => {
+    if (!dataPop.hidden && !(e.target as HTMLElement).closest('.menuwrap')) {
+      dataPop.hidden = true;
+    }
+  });
+  const afterLoad = () => {
+    vs.selected = null;
+    vs.railPath = [];
+    dataPop.hidden = true;
+  };
+  $('#saveNowBtn').addEventListener('click', () => {
+    game.onMessage(saveToLocal(game) ? '保存しました' : '保存に失敗しました');
+    dataPop.hidden = true;
+  });
+  $('#exportBtn').addEventListener('click', () => {
+    exportFile(game);
+    dataPop.hidden = true;
+  });
+  $('#importBtn').addEventListener('click', () => {
+    importFile(game, (ok) => {
+      game.onMessage(ok ? '読み込みました' : '読み込みに失敗しました');
+      if (ok) afterLoad();
+    });
+  });
+  $('#newBtn').addEventListener('click', () => {
+    if (!window.confirm('工場を初期状態に戻します。よろしいですか?')) return;
+    game.reset();
+    clearLocal();
+    game.onMessage('新規工場を開始しました');
+    afterLoad();
+  });
+
   // ---- 工程フローパネル ----
   flowPanel.innerHTML =
     `<h2>プロセスフロー</h2>` +
@@ -168,9 +226,51 @@ export function createUI(opts: UIOpts) {
         <span class="bar"><i></i></span>
         <b class="cnt">0</b>
       </div>`,
-    ).join('');
+    ).join('') +
+    `<div class="spark">
+      <h2>スループット推移 <b id="sparkNow">--</b></h2>
+      <canvas id="sparkCv" width="194" height="42"></canvas>
+    </div>`;
   const stepCnt = [...flowPanel.querySelectorAll<HTMLElement>('.cnt')];
   const stepBar = [...flowPanel.querySelectorAll<HTMLElement>('.bar i')];
+  const sparkNow = $('#sparkNow');
+  const sparkCv = $('#sparkCv') as HTMLCanvasElement;
+
+  // 直近5分のスループット(単一系列: アクセント色ライン+面、終端を強調)
+  function drawSpark(current: number) {
+    const c = sparkCv.getContext('2d')!;
+    const W = sparkCv.width;
+    const H = sparkCv.height;
+    c.clearRect(0, 0, W, H);
+    const data = [...game.tpHistory.slice(-60), current];
+    const max = Math.max(1, ...data);
+    const px = (i: number) => (i / Math.max(1, data.length - 1)) * (W - 8) + 2;
+    const py = (v: number) => H - 5 - (v / max) * (H - 12);
+    // ベースライン
+    c.strokeStyle = '#e2e7ea';
+    c.lineWidth = 1;
+    c.beginPath();
+    c.moveTo(2, H - 4.5);
+    c.lineTo(W - 4, H - 4.5);
+    c.stroke();
+    // 面 + ライン
+    c.beginPath();
+    data.forEach((v, i) => (i === 0 ? c.moveTo(px(i), py(v)) : c.lineTo(px(i), py(v))));
+    c.strokeStyle = '#7761a7';
+    c.lineWidth = 2;
+    c.lineJoin = 'round';
+    c.stroke();
+    c.lineTo(px(data.length - 1), H - 5);
+    c.lineTo(px(0), H - 5);
+    c.closePath();
+    c.fillStyle = 'rgba(119, 97, 167, 0.12)';
+    c.fill();
+    // 終端の強調
+    c.beginPath();
+    c.arc(px(data.length - 1), py(current), 3, 0, Math.PI * 2);
+    c.fillStyle = '#7761a7';
+    c.fill();
+  }
 
   // ---- コンテキストカード ----
   const card = $('#ctxcard');
@@ -193,13 +293,15 @@ export function createUI(opts: UIOpts) {
     card.style.top = `${Math.min(window.innerHeight - 220, Math.max(52, p.y))}px`;
 
     const status =
-      m.maintLeft > 0 ? `整備中 残り${Math.ceil(m.maintLeft)}s`
+      m.broken && m.repairLeft > 0 ? `修理中 残り${Math.ceil(m.repairLeft)}s`
+      : m.broken ? '故障 — 要修理'
+      : m.maintLeft > 0 ? `整備中 残り${Math.ceil(m.maintLeft)}s`
       : m.busyLot ? '処理中'
       : m.holdLot ? '出力待ち(ポート満杯)'
       : '待機中';
     const portDots = (io: 'in' | 'out') =>
       m.ports.filter((x) => x.io === io).map((x) => (x.foup ? '●' : '○')).join('');
-    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${m.noRoute}|${m.storage.length}`;
+    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${m.noRoute}|${m.storage.length}|${m.broken}`;
     if (sig === cardSig) return;
     cardSig = sig;
 
@@ -216,11 +318,18 @@ export function createUI(opts: UIOpts) {
         : `<div class="row"><span>処理数</span><b>${m.jobs}</b></div>`}
       <div class="row"><span>ポート</span><b>IN ${portDots('in') || 'ー'}&nbsp; OUT ${portDots('out') || 'ー'}</b></div>
       ${m.noRoute ? '<div class="alert">次工程へのレール経路がありません</div>' : ''}
+      ${m.broken && m.repairLeft === 0 ? '<div class="alert bad">故障しています。修理を開始してください</div>' : ''}
       <div class="btns"></div>
     `;
     const btns = card.querySelector('.btns')!;
     if (def.placeable) {
-      if (m.kind !== 'stocker') {
+      if (m.broken) {
+        const repair = document.createElement('button');
+        repair.textContent = `修理 (${Math.ceil(m.repairLeft) || 25}秒)`;
+        repair.disabled = m.repairLeft > 0;
+        repair.addEventListener('click', () => game.startRepair(m));
+        btns.append(repair);
+      } else if (m.kind !== 'stocker') {
         const maint = document.createElement('button');
         maint.textContent = 'メンテナンス';
         maint.disabled = m.busyLot !== null || m.maintLeft > 0;
@@ -248,6 +357,10 @@ export function createUI(opts: UIOpts) {
     $('#stTp').innerHTML = `${st.throughput.toFixed(1)}<i>/分</i>`;
     $('#stYield').textContent =
       st.completed > 0 ? `${(st.avgYield * 100).toFixed(1)}%` : '--';
+    $('#stWait').textContent =
+      st.avgWait > 0 ? `${st.avgWait.toFixed(1)}s` : '--';
+    ($('#stBrokenWrap') as HTMLElement).hidden = st.broken === 0;
+    $('#stBroken').textContent = String(st.broken);
     $('#stOht').textContent = `${st.ohtTotal}/${st.ohtSize}台`;
     ($('#stOht') as HTMLElement).title =
       `稼働 ${st.ohtTotal - st.ohtIdle} / 待機 ${st.ohtIdle} / 保有枠 ${st.ohtSize}`;
@@ -258,10 +371,15 @@ export function createUI(opts: UIOpts) {
       stepBar[i].style.width = `${(n / maxWip) * 100}%`;
     });
 
+    if (!flowPanel.classList.contains('hidden')) {
+      sparkNow.textContent = `${st.throughput.toFixed(1)}/分`;
+      drawSpark(st.throughput);
+    }
+
     refreshCard();
   }
 
-  return { refresh, syncTool, selectToolByKey, toggleFlow, setTool };
+  return { refresh, syncTool, selectToolByKey, toggleFlow, toggleHeat, setTool };
 }
 
 // ---- ホットバーのアイコン(Canvas描画) ----

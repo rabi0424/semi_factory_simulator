@@ -1,5 +1,6 @@
-import { TILE, MAP_COLS, MAP_ROWS } from './config';
+import { TILE, MAP_COLS, MAP_ROWS, AUTOSAVE_INTERVAL } from './config';
 import { Game } from './sim';
+import { saveToLocal, loadFromLocal } from './save';
 import { render } from './render';
 import type { ViewState, Camera } from './render';
 import { createUI } from './ui';
@@ -42,8 +43,10 @@ const vs: ViewState = {
   cam,
   cursor: { c: -1, r: -1, inside: false },
   tool: { mode: 'select', kind: null },
+  toolRot: 0,
   railPath: [],
   selected: null,
+  showHeat: false,
   time: 0,
 };
 
@@ -126,7 +129,7 @@ canvas.addEventListener('mousedown', (e) => {
       break;
     }
     case 'place': {
-      if (vs.tool.kind) game.addMachine(vs.tool.kind, c, r);
+      if (vs.tool.kind) game.addMachine(vs.tool.kind, c, r, vs.toolRot);
       break;
     }
     case 'demolish': {
@@ -200,6 +203,14 @@ window.addEventListener('keydown', (e) => {
     ui.toggleFlow();
     return;
   }
+  if (e.key === 'r' || e.key === 'R') {
+    vs.toolRot = (vs.toolRot + 1) % 4;
+    return;
+  }
+  if (e.key === 'h' || e.key === 'H') {
+    ui.toggleHeat();
+    return;
+  }
   const panStep = 60 / cam.scale;
   if (e.key === 'ArrowLeft') cam.x -= panStep;
   else if (e.key === 'ArrowRight') cam.x += panStep;
@@ -211,9 +222,16 @@ window.addEventListener('keyup', (e) => {
   if (e.key === ' ') spaceHeld = false;
 });
 
+// ---- セーブ/ロード ----
+if (loadFromLocal(game)) {
+  setTimeout(() => game.onMessage('前回のセーブデータを読み込みました'), 400);
+}
+window.addEventListener('beforeunload', () => saveToLocal(game));
+
 // ---- ループ ----
 let last = performance.now();
 let uiTimer = 0;
+let saveTimer = 0;
 
 function frame(now: number) {
   const dt = Math.min(0.1, (now - last) / 1000);
@@ -227,6 +245,11 @@ function frame(now: number) {
   if (uiTimer >= 0.15) {
     uiTimer = 0;
     ui.refresh();
+  }
+  saveTimer += dt;
+  if (saveTimer >= AUTOSAVE_INTERVAL) {
+    saveTimer = 0;
+    saveToLocal(game);
   }
   requestAnimationFrame(frame);
 }

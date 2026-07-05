@@ -33,9 +33,10 @@
       position: fixed; top: 0; left: 0; right: 0; height: 42px;
       background: var(--surface);
       border-bottom: 1px solid var(--line);
-      display: flex; align-items: center; gap: 18px;
-      padding: 0 14px;
+      display: flex; align-items: center; gap: 10px;
+      padding: 0 12px;
       user-select: none;
+      white-space: nowrap;
       z-index: 10;
     }
     .brand { font-weight: 700; font-size: 12px; letter-spacing: 0.04em; white-space: nowrap; }
@@ -46,12 +47,12 @@
     }
     .stats { display: flex; align-items: center; gap: 0; }
     .stat {
-      display: flex; align-items: baseline; gap: 6px;
-      padding: 0 12px; border-left: 1px solid var(--line);
+      display: flex; align-items: baseline; gap: 5px;
+      padding: 0 9px; border-left: 1px solid var(--line);
       white-space: nowrap;
     }
-    .stat label { font-size: 10px; color: var(--dim); letter-spacing: 0.06em; }
-    .stat b { font-size: 14px; }
+    .stat label { font-size: 10px; color: var(--dim); letter-spacing: 0.04em; }
+    .stat b { font-size: 13px; }
     .stat b i { font-style: normal; font-size: 10px; color: var(--dim); }
     .stat.oht button {
       width: 20px; height: 20px; border: 1px solid var(--line); background: var(--surface2);
@@ -59,19 +60,39 @@
     }
     .stat.oht button:hover { border-color: var(--accent); }
     .grow { flex: 1; }
-    .ctl { display: flex; align-items: center; gap: 10px; }
-    .ctl .spawn { display: flex; align-items: center; gap: 6px; }
+    .ctl { display: flex; align-items: center; gap: 6px; }
+    .ctl .spawn { display: flex; align-items: center; gap: 5px; }
     .ctl .spawn label { font-size: 10px; color: var(--dim); }
-    .ctl .spawn input { width: 90px; accent-color: var(--accent); }
-    .ctl .spawn b { font-size: 12px; min-width: 26px; }
+    .ctl .spawn input { width: 64px; accent-color: var(--accent); }
+    .ctl .spawn b { font-size: 12px; min-width: 24px; }
     .tbtn, .seg button {
       border: 1px solid var(--line); background: var(--surface);
-      padding: 4px 9px; cursor: pointer; font-size: 12px;
+      padding: 4px 7px; cursor: pointer; font-size: 12px;
+    }
+    @media (max-width: 1360px) {
+      .brand { display: none; }
     }
     .tbtn:hover, .seg button:hover { border-color: var(--accent); }
     .tbtn.on, .seg button.on { background: #efeaf7; border-color: var(--accent); color: var(--accent); }
     .seg { display: inline-flex; }
     .seg button + button { border-left: none; }
+    .menuwrap { position: relative; }
+    #dataPop {
+      position: absolute; top: 30px; right: 0; width: 168px;
+      background: var(--surface); border: 1px solid var(--line);
+      box-shadow: 0 6px 20px rgba(50, 70, 80, 0.16);
+      padding: 6px; z-index: 20;
+      display: flex; flex-direction: column; gap: 4px;
+    }
+    #dataPop[hidden] { display: none; }
+    #dataPop button {
+      border: 1px solid var(--line); background: var(--surface);
+      padding: 6px 8px; font-size: 12px; cursor: pointer; text-align: left;
+    }
+    #dataPop button:hover { border-color: var(--accent); }
+    #dataPop button.danger { color: var(--bad); }
+    #dataPop button.danger:hover { border-color: var(--bad); }
+    #dataPop .dim { color: var(--dim); font-size: 10px; padding: 2px 2px 0; }
 
     /* ---- 下部ホットバー ---- */
     #hotbar {
@@ -125,6 +146,10 @@
     }
     #flow .bar i { display: block; height: 100%; background: var(--accent); }
     #flow .cnt { font-size: 11.5px; min-width: 16px; text-align: right; }
+    #flow .spark { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px; }
+    #flow .spark h2 { display: flex; justify-content: space-between; align-items: baseline; }
+    #flow .spark h2 b { font-size: 12px; color: var(--ink); }
+    #flow .spark canvas { display: block; }
 
     /* ---- コンテキストカード ---- */
     #ctxcard {
@@ -155,6 +180,9 @@
     #ctxcard .alert {
       margin-top: 6px; padding: 5px 8px; font-size: 11px;
       color: #8a6414; background: #faf3e0; border: 1px solid #ecd9a8;
+    }
+    #ctxcard .alert.bad {
+      color: #93392f; background: #faeae8; border-color: #e6b7b1;
     }
     #ctxcard .btns { display: flex; gap: 6px; margin-top: 10px; }
     #ctxcard .btns button {

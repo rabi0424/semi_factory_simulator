@@ -60,7 +60,30 @@ export class Fleet {
   size = START_FLEET;    // 保有台数(この数までしか湧かない)
   private occ = new Map<TileKey, Vehicle>();
 
+  // FOUPを吊り上げた瞬間に呼ばれる(搬送待ち統計用)
+  onPickup: (port: Port) => void = () => {};
+
+  // 渋滞ヒート: タイルごとの「待たされた時間」の蓄積(指数減衰)
+  heat = new Map<TileKey, number>();
+  heatMax = 1;
+
   constructor(private rail: RailNetwork) {}
+
+  private addHeat(k: TileKey, amount: number) {
+    const v = (this.heat.get(k) ?? 0) + amount;
+    this.heat.set(k, v);
+    if (v > this.heatMax) this.heatMax = v;
+  }
+
+  private decayHeat(dt: number) {
+    const f = Math.exp(-dt / 12);
+    this.heatMax = Math.max(1, this.heatMax * f);
+    for (const [k, v] of this.heat) {
+      const nv = v * f;
+      if (nv < 0.05) this.heat.delete(k);
+      else this.heat.set(k, nv);
+    }
+  }
 
   idleCount(): number {
     return this.vehicles.filter((v) => v.state === 'idle').length;
@@ -112,7 +135,28 @@ export class Fleet {
     return false;
   }
 
+  // セーブデータからビークルを復元。ホイスト途中の状態は走行状態に正規化する
+  restoreVehicle(
+    tile: TileKey,
+    state: VehState,
+    carrying: Lot | null,
+    job: TransportJob | null,
+  ) {
+    const v = new Vehicle(tile);
+    if (!job) {
+      v.state = 'idle';
+    } else {
+      v.job = job;
+      v.carrying = carrying;
+      v.state = carrying ? 'toDrop' : 'toPickup';
+    }
+    void state; // 現状は正規化するため未使用(将来ホイスト位置も保存する場合に使う)
+    this.occ.set(tile, v);
+    this.vehicles.push(v);
+  }
+
   update(dt: number) {
+    this.decayHeat(dt);
     for (const v of [...this.vehicles]) this.updateVehicle(v, dt);
   }
 
@@ -141,6 +185,7 @@ export class Fleet {
         v.hoistT = Math.min(1, v.hoistT + dt / HOIST_TIME);
         if (v.hoistT >= 1) {
           const p = v.job!.from;
+          this.onPickup(p);
           v.carrying = p.foup;
           p.foup = null;
           p.reserved = false;
@@ -217,7 +262,10 @@ export class Fleet {
           v.path = []; // レールが撤去された → 再探索へ
           continue;
         }
-        if (!this.isFree(next)) return; // 前方渋滞
+        if (!this.isFree(next)) {
+          this.addHeat(v.tile, dt); // 前方渋滞で待機
+          return;
+        }
         v.path.shift();
         v.target = next;
         this.occ.set(next, v);

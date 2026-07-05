@@ -105,12 +105,50 @@ export const RECIPE: RecipeStep[] = [
   { kind: 'inspect', label: '検査' },
 ];
 
+// ---- 回転 ----
+// rot = 時計回り90°の回数。ポート面: 0=南, 1=西, 2=北, 3=東
+export function rotSize(def: MachineDef, rot: number): { w: number; h: number } {
+  return rot % 2 === 0 ? { w: def.w, h: def.h } : { w: def.h, h: def.w };
+}
+
+export interface RotatedPort extends PortSpec {
+  fx: number; // ポートが向く外側方向(単位ベクトル)
+  fy: number;
+}
+
+export function rotPorts(def: MachineDef, rot: number): RotatedPort[] {
+  return def.ports.map((p) => {
+    let dx = p.dx;
+    let dy = p.dy;
+    for (let i = 0; i < rot; i++) {
+      // 90°CW: (x,y) -> (h-1-y, x)。グリッドの h は回転前の高さ
+      const size = rotSize(def, i);
+      [dx, dy] = [size.h - 1 - dy, dx];
+    }
+    const faces = [
+      { fx: 0, fy: 1 }, { fx: -1, fy: 0 }, { fx: 0, fy: -1 }, { fx: 1, fy: 0 },
+    ][rot % 4];
+    return { dx, dy, io: p.io, ...faces };
+  });
+}
+
 // ---- シミュレーション定数 ----
 export const MAINT_TIME = 8;          // メンテナンス所要 [秒]
 export const MIN_CLEANLINESS = 0.2;
 export const SCRAP_THRESHOLD = 0.4;   // 検査でこれ未満は廃棄
 export const DEFAULT_SPAWN_INTERVAL = 10;
 export const STOCKER_CAP = 6;         // ストッカーの内部保管数
+
+// ---- 故障 ----
+// 1ジョブ完了ごとに故障判定。汚れているほど壊れやすい
+export const FAIL_BASE = 0.004;       // 清浄度100%時の故障率/ジョブ
+export const FAIL_DIRTY_COEF = 0.09;  // (1-清浄度) に掛かる係数
+export const REPAIR_TIME = 25;        // 修理所要 [秒](メンテの約3倍)
+
+// ---- セーブ ----
+export const SAVE_KEY = 'semifab.save.v1';
+export const SAVE_VERSION = 1;
+export const AUTOSAVE_INTERVAL = 10;  // [実秒]
 
 // ---- OHT(天井搬送) ----
 export const OHT_SPEED = 6;           // 走行速度 [タイル/秒]

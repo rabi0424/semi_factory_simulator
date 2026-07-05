@@ -1,12 +1,12 @@
 // クリーンルーム調のワールド描画。
 // 床(パンチングパネル) → 装置(2.5D) → 天井レール → OHTビークルの順に重ねる。
 
-import { TILE, MAP_COLS, MAP_ROWS, MACHINE_DEFS } from './config';
+import { TILE, MAP_COLS, MAP_ROWS, MACHINE_DEFS, rotSize, rotPorts } from './config';
 import type { MachineKind } from './config';
 import { parseKey, tkey } from './rail';
 import type { TileKey } from './rail';
 import { Game } from './sim';
-import type { Machine } from './sim';
+import type { Machine, Port } from './sim';
 import { vehiclePos } from './oht';
 import type { Vehicle } from './oht';
 
@@ -27,8 +27,10 @@ export interface ViewState {
   cam: Camera;
   cursor: { c: number; r: number; inside: boolean };
   tool: Tool;
+  toolRot: number;       // 設置ツールの回転(Rキー)
   railPath: TileKey[];   // レール敷設ドラッグ中のプレビュー経路
   selected: Machine | null;
+  showHeat: boolean;     // 渋滞ヒートマップ表示
   time: number;
 }
 
@@ -125,6 +127,9 @@ export function render(
   // 天井レール
   drawRails(ctx, game, vs);
 
+  // 渋滞ヒートマップ
+  if (vs.showHeat) drawHeat(ctx, game);
+
   // OHTビークル
   for (const v of game.fleet.vehicles) drawVehicle(ctx, v, vs.time);
 
@@ -136,11 +141,11 @@ export function render(
 
 function drawMachine(ctx: CanvasRenderingContext2D, m: Machine, vs: ViewState) {
   const def = MACHINE_DEFS[m.kind];
-  const lift = def.h === 1 ? LIFT1 : LIFT2;
+  const lift = m.h === 1 ? LIFT1 : LIFT2;
   const x = m.col * TILE;
   const y = m.row * TILE;
-  const W = def.w * TILE;
-  const H = def.h * TILE;
+  const W = m.w * TILE;
+  const H = m.h * TILE;
   const i = 3;
 
   // 接地影
@@ -165,15 +170,19 @@ function drawMachine(ctx: CanvasRenderingContext2D, m: Machine, vs: ViewState) {
   // パネル分割線
   ctx.strokeStyle = C.seam;
   ctx.beginPath();
-  for (let s = 1; s < def.w; s++) {
+  for (let s = 1; s < m.w; s++) {
     ctx.moveTo(x + s * TILE + 0.5, ty + 4);
     ctx.lineTo(x + s * TILE + 0.5, ty + th - 4);
   }
   ctx.stroke();
 
-  // アクセントライン(天面の南端)
+  // アクセントライン(ポート面の縁 — 装置の向きが分かる)
   ctx.fillStyle = def.accent;
-  ctx.fillRect(x + i + 1, ty + th - 5, W - i * 2 - 2, 4);
+  const face = m.rot % 4;
+  if (face === 0) ctx.fillRect(x + i + 1, ty + th - 5, W - i * 2 - 2, 4);
+  else if (face === 1) ctx.fillRect(x + i + 1, ty + 1, 4, th - 2);
+  else if (face === 2) ctx.fillRect(x + i + 1, ty + 1, W - i * 2 - 2, 4);
+  else ctx.fillRect(x + W - i - 5, ty + 1, 4, th - 2);
 
   // 銘板
   ctx.fillStyle = C.ink;
@@ -217,35 +226,26 @@ function drawMachine(ctx: CanvasRenderingContext2D, m: Machine, vs: ViewState) {
     ctx.fillRect(x + i + 6, ty + th - 12, (W - i * 2 - 12) * p, 3);
   }
 
-  // シグナルタワー(積層灯)。投入・出荷ステーションには不要
-  if (def.placeable) drawStackLight(ctx, x + W - i - 10, ty + 5, m);
-
-  // ロードポート
-  for (const p of m.ports) {
-    const px = (p.col + 0.5) * TILE;
-    const py = y + H - i;
-    // ドック台座
-    ctx.fillStyle = '#cdd5da';
-    ctx.strokeStyle = p.reserved ? C.accent : '#b3bdc4';
-    ctx.lineWidth = 1;
-    rr(ctx, px - 13, py - 5, 26, 15, 2);
-    ctx.fill();
-    ctx.stroke();
-    // 入出マーカー
-    ctx.fillStyle = C.dim;
-    ctx.beginPath();
-    if (p.io === 'in') {
-      ctx.moveTo(px - 3, py + 8);
-      ctx.lineTo(px + 3, py + 8);
-      ctx.lineTo(px, py + 4);
-    } else {
-      ctx.moveTo(px - 3, py + 4);
-      ctx.lineTo(px + 3, py + 4);
-      ctx.lineTo(px, py + 8);
-    }
-    ctx.fill();
-    if (p.foup) drawFoup(ctx, px, py - 1);
+  // 整備 / 故障テキスト
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'top';
+  ctx.font = '600 9px system-ui, sans-serif';
+  if (m.maintLeft > 0) {
+    ctx.fillStyle = C.warn;
+    ctx.fillText(`整備中 ${Math.ceil(m.maintLeft)}s`, x + W / 2, ty + th / 2 + 2);
+  } else if (m.broken) {
+    ctx.fillStyle = C.bad;
+    ctx.fillText(
+      m.repairLeft > 0 ? `修理中 ${Math.ceil(m.repairLeft)}s` : '故障 — 要修理',
+      x + W / 2, ty + th / 2 + 2,
+    );
   }
+
+  // シグナルタワー(積層灯)。投入・出荷ステーションには不要
+  if (def.placeable) drawStackLight(ctx, x + W - i - 10, ty + 5, m, vs.time);
+
+  // ロードポート(装置の向きに応じた面に付く)
+  for (const p of m.ports) drawPortDock(ctx, p);
 
   // 搬送経路なし警告
   if (m.noRoute) {
@@ -266,14 +266,50 @@ function drawMachine(ctx: CanvasRenderingContext2D, m: Machine, vs: ViewState) {
   }
 }
 
+// ポートドック(FOUP台座)を装置の向きに応じた面に描く
+function drawPortDock(ctx: CanvasRenderingContext2D, p: Port) {
+  const ex = (p.col + 0.5) * TILE + p.fx * (TILE / 2 - 1);
+  const ey = (p.row + 0.5) * TILE + p.fy * (TILE / 2 - 1);
+  const horizontal = p.fy !== 0; // 南北面 → 横長ドック
+  const dw = horizontal ? 26 : 15;
+  const dh = horizontal ? 15 : 26;
+  const cx = ex + p.fx * 2;
+  const cy = ey + p.fy * 2;
+
+  ctx.fillStyle = '#cdd5da';
+  ctx.strokeStyle = p.reserved ? C.accent : '#b3bdc4';
+  ctx.lineWidth = 1;
+  rr(ctx, cx - dw / 2, cy - dh / 2, dw, dh, 2);
+  ctx.fill();
+  ctx.stroke();
+
+  // 入出マーカー(in: 装置向き / out: 外向きの三角)
+  const dir = p.io === 'in' ? -1 : 1;
+  const mx = cx + p.fx * (dw / 2 - 4) * 0.9;
+  const my = cy + p.fy * (dh / 2 - 4) * 0.9;
+  const ax = p.fx * 3 * dir;
+  const ay = p.fy * 3 * dir;
+  ctx.fillStyle = C.dim;
+  ctx.beginPath();
+  ctx.moveTo(mx - ay, my - ax);
+  ctx.lineTo(mx + ay, my + ax);
+  ctx.lineTo(mx + ax, my + ay);
+  ctx.closePath();
+  ctx.fill();
+
+  if (p.foup) drawFoup(ctx, cx, cy + 4);
+}
+
 function drawStackLight(
   ctx: CanvasRenderingContext2D,
   x: number,
   y: number,
   m: Machine,
+  time: number,
 ) {
   const isStocker = m.kind === 'stocker';
   const full = isStocker && m.storage.length >= 6;
+  const blink = Math.sin(time * 7) > 0;
   const states = isStocker
     ? [
         { color: C.bad, on: full },
@@ -281,8 +317,12 @@ function drawStackLight(
         { color: C.ok, on: !full },
       ]
     : [
-        { color: C.bad, on: m.maintLeft > 0 || m.holdLot !== null },
-        { color: C.warn, on: m.maintLeft === 0 && !m.busyLot && !m.holdLot },
+        {
+          color: C.bad,
+          // 故障(未着手)は点滅で強く知らせる
+          on: m.broken ? (m.repairLeft > 0 || blink) : m.maintLeft > 0 || m.holdLot !== null,
+        },
+        { color: C.warn, on: !m.broken && m.maintLeft === 0 && !m.busyLot && !m.holdLot },
         { color: C.ok, on: m.busyLot !== null },
       ];
   // ポール
@@ -473,44 +513,59 @@ function drawOverlays(ctx: CanvasRenderingContext2D, game: Game, vs: ViewState) 
 
   // 選択枠
   if (selected) {
-    const def = MACHINE_DEFS[selected.kind];
-    const lift = def.h === 1 ? LIFT1 : LIFT2;
+    const lift = selected.h === 1 ? LIFT1 : LIFT2;
     ctx.strokeStyle = C.accent;
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
     ctx.strokeRect(
       selected.col * TILE + 1,
       selected.row * TILE + 1 - lift,
-      def.w * TILE - 2,
-      def.h * TILE - 2 + lift,
+      selected.w * TILE - 2,
+      selected.h * TILE - 2 + lift,
     );
     ctx.setLineDash([]);
   }
 
-  // 設置ゴースト
+  // 設置ゴースト(Rキーで回転)
   if (tool.mode === 'place' && tool.kind && cursor.inside) {
     const def = MACHINE_DEFS[tool.kind];
-    const ok = game.canPlace(tool.kind, cursor.c, cursor.r);
+    const { w, h } = rotSize(def, vs.toolRot);
+    const ok = game.canPlace(tool.kind, cursor.c, cursor.r, vs.toolRot);
     const x = cursor.c * TILE;
     const y = cursor.r * TILE;
     ctx.globalAlpha = 0.75;
     ctx.fillStyle = ok ? 'rgba(93, 160, 112, 0.20)' : 'rgba(204, 79, 68, 0.20)';
-    ctx.fillRect(x, y, def.w * TILE, def.h * TILE);
+    ctx.fillRect(x, y, w * TILE, h * TILE);
     ctx.strokeStyle = ok ? '#5da070' : C.bad;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([5, 4]);
-    ctx.strokeRect(x + 1, y + 1, def.w * TILE - 2, def.h * TILE - 2);
+    ctx.strokeRect(x + 1, y + 1, w * TILE - 2, h * TILE - 2);
     ctx.setLineDash([]);
-    // 簡易シルエット
+    // 簡易シルエット + ポート位置プレビュー
     ctx.fillStyle = 'rgba(255,255,255,0.65)';
-    ctx.fillRect(x + 4, y + 4, def.w * TILE - 8, def.h * TILE - 8);
+    ctx.fillRect(x + 4, y + 4, w * TILE - 8, h * TILE - 8);
     ctx.fillStyle = def.accent;
-    ctx.fillRect(x + 5, y + def.h * TILE - 10, def.w * TILE - 10, 4);
+    const face = vs.toolRot % 4;
+    if (face === 0) ctx.fillRect(x + 5, y + h * TILE - 10, w * TILE - 10, 4);
+    else if (face === 1) ctx.fillRect(x + 5, y + 5, 4, h * TILE - 10);
+    else if (face === 2) ctx.fillRect(x + 5, y + 5, w * TILE - 10, 4);
+    else ctx.fillRect(x + w * TILE - 10, y + 5, 4, h * TILE - 10);
+    for (const p of rotPorts(def, vs.toolRot)) {
+      const px = (cursor.c + p.dx + 0.5) * TILE + p.fx * (TILE / 2 - 4);
+      const py = (cursor.r + p.dy + 0.5) * TILE + p.fy * (TILE / 2 - 4);
+      ctx.fillStyle = p.io === 'in' ? C.dim : C.accent;
+      ctx.beginPath();
+      ctx.arc(px, py, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
     ctx.fillStyle = C.ink;
     ctx.font = '600 10px system-ui, sans-serif';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(def.short, x + (def.w * TILE) / 2, y + (def.h * TILE) / 2 - 4);
+    ctx.fillText(def.short, x + (w * TILE) / 2, y + (h * TILE) / 2 - 4);
+    ctx.fillStyle = C.dim;
+    ctx.font = '9px system-ui, sans-serif';
+    ctx.fillText('R: 回転', x + (w * TILE) / 2, y + h * TILE + 9);
     ctx.globalAlpha = 1;
   }
 
@@ -569,17 +624,36 @@ function drawOverlays(ctx: CanvasRenderingContext2D, game: Game, vs: ViewState) 
   if (tool.mode === 'demolish' && cursor.inside) {
     const m = game.machineAtTile(cursor.c, cursor.r);
     if (m && MACHINE_DEFS[m.kind].placeable) {
-      const def = MACHINE_DEFS[m.kind];
-      const lift = def.h === 1 ? LIFT1 : LIFT2;
+      const lift = m.h === 1 ? LIFT1 : LIFT2;
       ctx.strokeStyle = C.bad;
       ctx.lineWidth = 2;
       ctx.setLineDash([5, 4]);
       ctx.strokeRect(
         m.col * TILE + 1, m.row * TILE + 1 - lift,
-        def.w * TILE - 2, def.h * TILE - 2 + lift,
+        m.w * TILE - 2, m.h * TILE - 2 + lift,
       );
       ctx.setLineDash([]);
     }
+  }
+}
+
+// 渋滞ヒートマップ: 待たされたタイルほど赤く光る
+function drawHeat(ctx: CanvasRenderingContext2D, game: Game) {
+  const { heat, heatMax } = game.fleet;
+  for (const [k, v] of heat) {
+    const t = Math.min(1, v / Math.max(heatMax, 3));
+    if (t < 0.05) continue;
+    const { c, r } = parseKey(k);
+    const x = (c + 0.5) * TILE;
+    const y = (r + 0.5) * TILE;
+    // 弱=琥珀 → 強=赤
+    const red = Math.round(217 + (204 - 217) * t);
+    const grn = Math.round(154 + (79 - 154) * t);
+    const blu = Math.round(43 + (68 - 43) * t);
+    ctx.beginPath();
+    ctx.arc(x, y, 9 + 8 * t, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(${red},${grn},${blu},${0.18 + 0.4 * t})`;
+    ctx.fill();
   }
 }
 

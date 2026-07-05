@@ -1,10 +1,13 @@
 import {
   MAP_COLS, MAP_ROWS, MACHINE_DEFS, RECIPE, MAINT_TIME,
   MIN_CLEANLINESS, SCRAP_THRESHOLD, DEFAULT_SPAWN_INTERVAL, STOCKER_CAP,
+  FAIL_BASE, FAIL_DIRTY_COEF, REPAIR_TIME, SAVE_VERSION,
+  rotSize, rotPorts,
 } from './config';
 import type { MachineKind } from './config';
 import { RailNetwork, tkey } from './rail';
 import { Fleet, portKey } from './oht';
+import type { VehState } from './oht';
 
 export interface Lot {
   id: number;
@@ -16,9 +19,12 @@ export interface Port {
   machine: Machine;
   col: number;      // 絶対タイル座標
   row: number;
+  fx: number;       // ポートの外側方向(描画用)
+  fy: number;
   io: 'in' | 'out';
   foup: Lot | null;
   reserved: boolean; // in: 搬送予約済み / out: ビークル引き取り予約済み
+  readyAt: number;   // outポートにFOUPが載った時刻(搬送待ち統計用)
 }
 
 export interface Machine {
@@ -27,11 +33,16 @@ export interface Machine {
   label: string;   // 銘板表示(例: LITHO-2)
   col: number;
   row: number;
+  rot: number;     // 0=南向きポート, 90°CW単位
+  w: number;       // 回転後フットプリント
+  h: number;
   busyLot: Lot | null;
   procLeft: number;
   holdLot: Lot | null;   // 処理完了したが出力ポートが塞がっていて出せないロット
   cleanliness: number;
   maintLeft: number;
+  broken: boolean;       // 故障中
+  repairLeft: number;    // >0 なら修理進行中
   jobs: number;
   ports: Port[];
   noRoute: boolean;      // 次工程へのレール経路がない
@@ -44,10 +55,12 @@ export interface Stats {
   scrapped: number;
   throughput: number;
   avgYield: number;
+  avgWait: number;       // 平均搬送待ち [秒]
   stepWip: number[];
   ohtTotal: number;
   ohtSize: number;
   ohtIdle: number;
+  broken: number;        // 故障中の装置数
 }
 
 let nextId = 1;
@@ -63,56 +76,75 @@ export class Game {
   spawnInterval = DEFAULT_SPAWN_INTERVAL;
   private spawnTimer = 0;
   private dispatchTimer = 0;
+  private histTimer = 0;
   private completions: { t: number; y: number }[] = [];
   completedCount = 0;
   scrappedCount = 0;
+  waitSamples: number[] = [];       // 搬送待ち時間の直近サンプル
+  tpHistory: number[] = [];         // 5秒おきのスループット履歴(スパークライン用)
   onMessage: (msg: string) => void = () => {};
 
   constructor() {
-    this.addMachine('load', 2, 7, true);
-    this.addMachine('ship', MAP_COLS - 4, 7, true);
+    this.wireFleet();
+    this.initStations();
+  }
+
+  // FOUPピックアップ時に搬送待ち時間を記録
+  private wireFleet() {
+    this.fleet.onPickup = (port: Port) => {
+      if (port.io === 'out' && port.readyAt >= 0) {
+        this.waitSamples.push(this.simTime - port.readyAt);
+        if (this.waitSamples.length > 50) this.waitSamples.shift();
+      }
+    };
+  }
+
+  private initStations() {
+    this.addMachine('load', 2, 7, 0, true);
+    this.addMachine('ship', MAP_COLS - 4, 7, 0, true);
   }
 
   // ---- 配置 ----
 
-  footprintTiles(kind: MachineKind, col: number, row: number): { c: number; r: number }[] {
-    const def = MACHINE_DEFS[kind];
-    const tiles: { c: number; r: number }[] = [];
-    for (let dc = 0; dc < def.w; dc++)
-      for (let dr = 0; dr < def.h; dr++) tiles.push({ c: col + dc, r: row + dr });
-    return tiles;
-  }
-
   machineAtTile(c: number, r: number): Machine | undefined {
-    return this.machines.find((m) => {
-      const def = MACHINE_DEFS[m.kind];
-      return c >= m.col && c < m.col + def.w && r >= m.row && r < m.row + def.h;
-    });
-  }
-
-  canPlace(kind: MachineKind, col: number, row: number): boolean {
-    return this.footprintTiles(kind, col, row).every(
-      ({ c, r }) =>
-        c >= 0 && r >= 0 && c < MAP_COLS && r < MAP_ROWS && !this.machineAtTile(c, r),
+    return this.machines.find(
+      (m) => c >= m.col && c < m.col + m.w && r >= m.row && r < m.row + m.h,
     );
   }
 
-  addMachine(kind: MachineKind, col: number, row: number, force = false): Machine | null {
-    if (!force && !this.canPlace(kind, col, row)) {
+  canPlace(kind: MachineKind, col: number, row: number, rot: number): boolean {
+    const { w, h } = rotSize(MACHINE_DEFS[kind], rot);
+    for (let dc = 0; dc < w; dc++) {
+      for (let dr = 0; dr < h; dr++) {
+        const c = col + dc;
+        const r = row + dr;
+        if (c < 0 || r < 0 || c >= MAP_COLS || r >= MAP_ROWS) return false;
+        if (this.machineAtTile(c, r)) return false;
+      }
+    }
+    return true;
+  }
+
+  addMachine(
+    kind: MachineKind, col: number, row: number, rot = 0, force = false,
+  ): Machine | null {
+    if (!force && !this.canPlace(kind, col, row, rot)) {
       this.onMessage('そこには設置できません');
       return null;
     }
     const def = MACHINE_DEFS[kind];
+    const { w, h } = rotSize(def, rot);
     const serial = this.machines.filter((x) => x.kind === kind).length + 1;
     const m: Machine = {
-      id: nextId++, kind, label: `${def.short}-${serial}`, col, row,
+      id: nextId++, kind, label: `${def.short}-${serial}`, col, row, rot, w, h,
       busyLot: null, procLeft: 0, holdLot: null,
-      cleanliness: 1, maintLeft: 0, jobs: 0,
+      cleanliness: 1, maintLeft: 0, broken: false, repairLeft: 0, jobs: 0,
       ports: [], noRoute: false, storage: [],
     };
-    m.ports = def.ports.map((p) => ({
+    m.ports = rotPorts(def, rot).map((p) => ({
       machine: m, col: col + p.dx, row: row + p.dy,
-      io: p.io, foup: null, reserved: false,
+      fx: p.fx, fy: p.fy,
+      io: p.io, foup: null, reserved: false, readyAt: -1,
     }));
     this.machines.push(m);
     return m;
@@ -144,8 +176,14 @@ export class Game {
   }
 
   startMaintenance(m: Machine): boolean {
-    if (m.busyLot || m.maintLeft > 0) return false;
+    if (m.busyLot || m.maintLeft > 0 || m.broken) return false;
     m.maintLeft = MAINT_TIME;
+    return true;
+  }
+
+  startRepair(m: Machine): boolean {
+    if (!m.broken || m.repairLeft > 0) return false;
+    m.repairLeft = REPAIR_TIME;
     return true;
   }
 
@@ -165,6 +203,22 @@ export class Game {
       this.dispatch();
     }
     this.fleet.update(dt);
+
+    // スループット履歴(5秒粒度、最大10分)
+    this.histTimer += dt;
+    if (this.histTimer >= 5) {
+      this.histTimer = 0;
+      this.tpHistory.push(this.currentThroughput());
+      if (this.tpHistory.length > 120) this.tpHistory.shift();
+    }
+  }
+
+  private currentThroughput(): number {
+    const horizon = 60;
+    const from = this.simTime - horizon;
+    this.completions = this.completions.filter((c) => c.t >= from);
+    const window = Math.min(horizon, Math.max(this.simTime, 1));
+    return (this.completions.length / window) * 60;
   }
 
   private updateSpawn(dt: number) {
@@ -177,6 +231,7 @@ export class Game {
     const lot: Lot = { id: nextId++, step: 0, yield_: 1 };
     this.lots.push(lot);
     port.foup = lot;
+    port.readyAt = this.simTime;
   }
 
   private updateMachine(m: Machine, dt: number) {
@@ -205,6 +260,20 @@ export class Game {
       for (const p of m.ports) {
         if (p.io === 'out' && !p.foup && m.storage.length > 0) {
           p.foup = m.storage.shift()!;
+          p.readyAt = this.simTime;
+        }
+      }
+      return;
+    }
+
+    // 故障: 修理が始まっていれば進行、そうでなければ停止したまま
+    if (m.broken) {
+      if (m.repairLeft > 0) {
+        m.repairLeft -= dt;
+        if (m.repairLeft <= 0) {
+          m.repairLeft = 0;
+          m.broken = false;
+          m.cleanliness = 1; // オーバーホール扱い
         }
       }
       return;
@@ -224,6 +293,7 @@ export class Game {
       const out = m.ports.find((p) => p.io === 'out' && !p.foup);
       if (out) {
         out.foup = m.holdLot;
+        out.readyAt = this.simTime;
         m.holdLot = null;
       }
     }
@@ -259,6 +329,12 @@ export class Game {
 
     lot.step++;
 
+    // 故障判定(汚れているほど壊れやすい)
+    if (Math.random() < FAIL_BASE + dirtiness * FAIL_DIRTY_COEF) {
+      m.broken = true;
+      this.onMessage(`⚠ ${m.label} が故障しました — 修理が必要です`);
+    }
+
     // 最終工程(検査)完了 → 歩留まり確定。基準未満は廃棄
     if (lot.step >= RECIPE.length && lot.yield_ < SCRAP_THRESHOLD) {
       this.scrappedCount++;
@@ -279,14 +355,22 @@ export class Game {
         const kind: MachineKind =
           lot.step >= RECIPE.length ? 'ship' : RECIPE[lot.step].kind;
 
-        // 行き先候補: 空きin ポートを持つ装置(整備中は除く)。
-        // 混雑度(処理中+出力待ち+in予約済み)が最小、同点なら距離
+        // このピックアップ地点からレールで到達できる範囲
+        const reach = this.rail.reachableFrom(tkey(p.col, p.row));
+        let sawUnreachable = false;
+
+        // 行き先候補: 空きin ポートを持ち、レール経路が通っている装置
+        // (整備・故障中は除く)。混雑度が最小、同点なら距離
         let bestPort: Port | null = null;
         let bestScore = Infinity;
         for (const dest of this.machines) {
-          if (dest.kind !== kind || dest.maintLeft > 0) continue;
+          if (dest.kind !== kind || dest.maintLeft > 0 || dest.broken) continue;
           const inPort = dest.ports.find((x) => x.io === 'in' && !x.foup && !x.reserved);
           if (!inPort) continue;
+          if (!reach.has(portKey(inPort))) {
+            sawUnreachable = true;
+            continue;
+          }
           const load =
             (dest.busyLot ? 1 : 0) + (dest.holdLot ? 1 : 0) +
             dest.ports.filter((x) => x.io === 'in' && (x.foup || x.reserved)).length;
@@ -306,6 +390,10 @@ export class Game {
             if (dest.storage.length >= STOCKER_CAP) continue;
             const inPort = dest.ports.find((x) => x.io === 'in' && !x.foup && !x.reserved);
             if (!inPort) continue;
+            if (!reach.has(portKey(inPort))) {
+              sawUnreachable = true;
+              continue;
+            }
             const dist = Math.hypot(inPort.col - p.col, inPort.row - p.row);
             if (dist < bestScore) {
               bestScore = dist;
@@ -313,11 +401,10 @@ export class Game {
             }
           }
         }
-        if (!bestPort) continue; // 空きが出るまで待つ
-
-        // レール経路の確認(ピックアップ地点 → 降ろし地点)
-        if (!this.rail.path(tkey(p.col, p.row), portKey(bestPort))) {
-          m.noRoute = true;
+        if (!bestPort) {
+          // 空きが出るまで待つ。レールが繋がっていない行き先しか
+          // なかった場合は警告を出す
+          if (sawUnreachable) m.noRoute = true;
           continue;
         }
         if (this.fleet.tryAssign({ from: p, to: bestPort, lot })) {
@@ -329,14 +416,14 @@ export class Game {
   }
 
   getStats(): Stats {
-    const horizon = 60;
-    const from = this.simTime - horizon;
-    this.completions = this.completions.filter((c) => c.t >= from);
-    const window = Math.min(horizon, Math.max(this.simTime, 1));
-    const throughput = (this.completions.length / window) * 60;
+    const throughput = this.currentThroughput();
     const avgYield =
       this.completions.length > 0
         ? this.completions.reduce((s, c) => s + c.y, 0) / this.completions.length
+        : 0;
+    const avgWait =
+      this.waitSamples.length > 0
+        ? this.waitSamples.reduce((s, w) => s + w, 0) / this.waitSamples.length
         : 0;
     const stepWip = RECIPE.map(() => 0);
     for (const lot of this.lots) {
@@ -348,12 +435,184 @@ export class Game {
       scrapped: this.scrappedCount,
       throughput,
       avgYield,
+      avgWait,
       stepWip,
       ohtTotal: this.fleet.vehicles.length,
       ohtSize: this.fleet.size,
       ohtIdle: this.fleet.idleCount(),
+      broken: this.machines.filter((m) => m.broken).length,
     };
   }
+
+  // ---- セーブ/ロード ----
+
+  serialize(): SaveData {
+    const lotId = (l: Lot | null) => (l ? l.id : null);
+    return {
+      v: SAVE_VERSION,
+      simTime: this.simTime,
+      spawnInterval: this.spawnInterval,
+      speed: this.speed,
+      nextId,
+      completedCount: this.completedCount,
+      scrappedCount: this.scrappedCount,
+      completions: this.completions,
+      tpHistory: this.tpHistory,
+      fleetSize: this.fleet.size,
+      lots: this.lots.map((l) => ({ id: l.id, step: l.step, y: l.yield_ })),
+      machines: this.machines.map((m) => ({
+        id: m.id, kind: m.kind, label: m.label,
+        col: m.col, row: m.row, rot: m.rot,
+        clean: m.cleanliness, maint: m.maintLeft,
+        broken: m.broken, repair: m.repairLeft, jobs: m.jobs,
+        busy: lotId(m.busyLot), procLeft: m.procLeft, hold: lotId(m.holdLot),
+        storage: m.storage.map((l) => l.id),
+        ports: m.ports.map((p) => ({ foup: lotId(p.foup), readyAt: p.readyAt })),
+      })),
+      rail: this.rail.allEdges(),
+      vehicles: this.fleet.vehicles.map((v) => ({
+        tile: v.tile,
+        state: v.state,
+        carrying: lotId(v.carrying),
+        job: v.job
+          ? {
+              fm: v.job.from.machine.id, fp: v.job.from.machine.ports.indexOf(v.job.from),
+              tm: v.job.to.machine.id, tp: v.job.to.machine.ports.indexOf(v.job.to),
+            }
+          : null,
+      })),
+    };
+  }
+
+  // 保存データから状態を復元(このインスタンスを作り直す)
+  loadFrom(data: SaveData): boolean {
+    if (data.v !== SAVE_VERSION) return false;
+
+    this.machines = [];
+    this.lots = [];
+    this.rail = new RailNetwork();
+    this.fleet = new Fleet(this.rail);
+    this.wireFleet();
+
+    this.simTime = data.simTime;
+    this.spawnInterval = data.spawnInterval;
+    this.speed = data.speed;
+    this.completedCount = data.completedCount;
+    this.scrappedCount = data.scrappedCount;
+    this.completions = data.completions;
+    this.tpHistory = data.tpHistory;
+    this.fleet.size = data.fleetSize;
+    this.spawnTimer = 0;
+    this.waitSamples = [];
+
+    const lotById = new Map<number, Lot>();
+    for (const l of data.lots) {
+      const lot: Lot = { id: l.id, step: l.step, yield_: l.y };
+      this.lots.push(lot);
+      lotById.set(l.id, lot);
+    }
+    const lot = (id: number | null) => (id === null ? null : lotById.get(id) ?? null);
+
+    const machineById = new Map<number, Machine>();
+    for (const md of data.machines) {
+      const m = this.addMachine(md.kind, md.col, md.row, md.rot, true)!;
+      m.id = md.id;
+      m.label = md.label;
+      m.cleanliness = md.clean;
+      m.maintLeft = md.maint;
+      m.broken = md.broken;
+      m.repairLeft = md.repair;
+      m.jobs = md.jobs;
+      m.busyLot = lot(md.busy);
+      m.procLeft = md.procLeft;
+      m.holdLot = lot(md.hold);
+      m.storage = md.storage.map((id) => lot(id)!).filter(Boolean);
+      md.ports.forEach((ps, i) => {
+        if (m.ports[i]) {
+          m.ports[i].foup = lot(ps.foup);
+          m.ports[i].readyAt = ps.readyAt;
+        }
+      });
+      machineById.set(m.id, m);
+    }
+
+    for (const [a, b] of data.rail) this.rail.addEdge(a, b);
+
+    for (const vd of data.vehicles) {
+      let job: { from: Port; to: Port; lot: Lot } | null = null;
+      if (vd.job) {
+        const from = machineById.get(vd.job.fm)?.ports[vd.job.fp];
+        const to = machineById.get(vd.job.tm)?.ports[vd.job.tp];
+        const jobLot = lot(vd.carrying) ?? from?.foup ?? null;
+        if (from && to && jobLot) job = { from, to, lot: jobLot };
+      }
+      const carrying = lot(vd.carrying);
+      if (carrying && !job) {
+        // ジョブを復元できない運搬中ロットは孤児になるため破棄
+        this.lots = this.lots.filter((l) => l !== carrying);
+        this.fleet.restoreVehicle(vd.tile, vd.state, null, null);
+        continue;
+      }
+      this.fleet.restoreVehicle(vd.tile, vd.state, carrying, job);
+    }
+    // 予約フラグはビークルのジョブから再構築
+    for (const v of this.fleet.vehicles) {
+      if (!v.job) continue;
+      if (!v.carrying) v.job.from.reserved = true;
+      v.job.to.reserved = true;
+    }
+
+    nextId = data.nextId;
+    return true;
+  }
+
+  reset() {
+    this.machines = [];
+    this.lots = [];
+    this.rail = new RailNetwork();
+    this.fleet = new Fleet(this.rail);
+    this.wireFleet();
+    this.simTime = 0;
+    this.spawnTimer = 0;
+    this.completions = [];
+    this.completedCount = 0;
+    this.scrappedCount = 0;
+    this.waitSamples = [];
+    this.tpHistory = [];
+    this.spawnInterval = DEFAULT_SPAWN_INTERVAL;
+    this.initStations();
+  }
+}
+
+// ---- セーブデータ型 ----
+
+export interface SaveData {
+  v: number;
+  simTime: number;
+  spawnInterval: number;
+  speed: number;
+  nextId: number;
+  completedCount: number;
+  scrappedCount: number;
+  completions: { t: number; y: number }[];
+  tpHistory: number[];
+  fleetSize: number;
+  lots: { id: number; step: number; y: number }[];
+  machines: {
+    id: number; kind: MachineKind; label: string;
+    col: number; row: number; rot: number;
+    clean: number; maint: number; broken: boolean; repair: number; jobs: number;
+    busy: number | null; procLeft: number; hold: number | null;
+    storage: number[];
+    ports: { foup: number | null; readyAt: number }[];
+  }[];
+  rail: [string, string][];
+  vehicles: {
+    tile: string;
+    state: VehState;
+    carrying: number | null;
+    job: { fm: number; fp: number; tm: number; tp: number } | null;
+  }[];
 }
 
 function rand(min: number, max: number): number {
