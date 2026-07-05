@@ -1,45 +1,53 @@
 import {
-  COLS, ROWS, TILE, MACHINE_DEFS, RECIPE, QUEUE_CAP, MAINT_TIME,
-  MIN_CLEANLINESS, SCRAP_THRESHOLD, LOT_SPEED, WIP_CAP,
-  DEFAULT_SPAWN_INTERVAL,
+  MAP_COLS, MAP_ROWS, MACHINE_DEFS, RECIPE, MAINT_TIME,
+  MIN_CLEANLINESS, SCRAP_THRESHOLD, DEFAULT_SPAWN_INTERVAL, STOCKER_CAP,
 } from './config';
 import type { MachineKind } from './config';
-
-export type LotState = 'waiting' | 'moving' | 'queued' | 'processing';
+import { RailNetwork, tkey } from './rail';
+import { Fleet, portKey } from './oht';
 
 export interface Lot {
   id: number;
-  x: number;
-  y: number;
-  step: number;          // 次に受ける工程のインデックス。RECIPE.length なら出荷待ち
-  yield_: number;        // 0..1
-  state: LotState;
-  target: Machine | null;
-  jitterX: number;       // 待機時の表示オフセット
-  jitterY: number;
+  step: number;   // 次に受ける工程。RECIPE.length なら出荷待ち
+  yield_: number; // 0..1
+}
+
+export interface Port {
+  machine: Machine;
+  col: number;      // 絶対タイル座標
+  row: number;
+  io: 'in' | 'out';
+  foup: Lot | null;
+  reserved: boolean; // in: 搬送予約済み / out: ビークル引き取り予約済み
 }
 
 export interface Machine {
   id: number;
   kind: MachineKind;
+  label: string;   // 銘板表示(例: LITHO-2)
   col: number;
   row: number;
   busyLot: Lot | null;
   procLeft: number;
-  cleanliness: number;   // 0.2..1.0
-  maintLeft: number;     // >0 ならメンテナンス中
+  holdLot: Lot | null;   // 処理完了したが出力ポートが塞がっていて出せないロット
+  cleanliness: number;
+  maintLeft: number;
   jobs: number;
-  queue: Lot[];          // 予約済みロット(移動中も含む)
-  arrived: Set<Lot>;     // queue のうち到着済みのもの
+  ports: Port[];
+  noRoute: boolean;      // 次工程へのレール経路がない
+  storage: Lot[];        // ストッカーの内部保管棚
 }
 
 export interface Stats {
   wip: number;
   completed: number;
   scrapped: number;
-  throughput: number;    // 直近60秒のロット/分
-  avgYield: number;      // 完成ロットの平均歩留まり
-  stepWip: number[];     // 工程ごとの仕掛かり数(ボトルネック可視化用)
+  throughput: number;
+  avgYield: number;
+  stepWip: number[];
+  ohtTotal: number;
+  ohtSize: number;
+  ohtIdle: number;
 }
 
 let nextId = 1;
@@ -47,53 +55,92 @@ let nextId = 1;
 export class Game {
   machines: Machine[] = [];
   lots: Lot[] = [];
+  rail = new RailNetwork();
+  fleet = new Fleet(this.rail);
   simTime = 0;
   paused = false;
   speed = 1;
   spawnInterval = DEFAULT_SPAWN_INTERVAL;
   private spawnTimer = 0;
+  private dispatchTimer = 0;
   private completions: { t: number; y: number }[] = [];
   completedCount = 0;
   scrappedCount = 0;
   onMessage: (msg: string) => void = () => {};
 
   constructor() {
-    // 投入口と出荷口は最初から設置済み
-    this.addMachine('load', 0, Math.floor(ROWS / 2));
-    this.addMachine('ship', COLS - 1, Math.floor(ROWS / 2));
+    this.addMachine('load', 2, 7, true);
+    this.addMachine('ship', MAP_COLS - 4, 7, true);
   }
 
-  machineAt(col: number, row: number): Machine | undefined {
-    return this.machines.find((m) => m.col === col && m.row === row);
+  // ---- 配置 ----
+
+  footprintTiles(kind: MachineKind, col: number, row: number): { c: number; r: number }[] {
+    const def = MACHINE_DEFS[kind];
+    const tiles: { c: number; r: number }[] = [];
+    for (let dc = 0; dc < def.w; dc++)
+      for (let dr = 0; dr < def.h; dr++) tiles.push({ c: col + dc, r: row + dr });
+    return tiles;
   }
 
-  addMachine(kind: MachineKind, col: number, row: number): Machine | null {
-    if (col < 0 || row < 0 || col >= COLS || row >= ROWS) return null;
-    if (this.machineAt(col, row)) {
-      this.onMessage('そのマスには既に装置があります');
+  machineAtTile(c: number, r: number): Machine | undefined {
+    return this.machines.find((m) => {
+      const def = MACHINE_DEFS[m.kind];
+      return c >= m.col && c < m.col + def.w && r >= m.row && r < m.row + def.h;
+    });
+  }
+
+  canPlace(kind: MachineKind, col: number, row: number): boolean {
+    return this.footprintTiles(kind, col, row).every(
+      ({ c, r }) =>
+        c >= 0 && r >= 0 && c < MAP_COLS && r < MAP_ROWS && !this.machineAtTile(c, r),
+    );
+  }
+
+  addMachine(kind: MachineKind, col: number, row: number, force = false): Machine | null {
+    if (!force && !this.canPlace(kind, col, row)) {
+      this.onMessage('そこには設置できません');
       return null;
     }
+    const def = MACHINE_DEFS[kind];
+    const serial = this.machines.filter((x) => x.kind === kind).length + 1;
     const m: Machine = {
-      id: nextId++, kind, col, row,
-      busyLot: null, procLeft: 0,
+      id: nextId++, kind, label: `${def.short}-${serial}`, col, row,
+      busyLot: null, procLeft: 0, holdLot: null,
       cleanliness: 1, maintLeft: 0, jobs: 0,
-      queue: [], arrived: new Set(),
+      ports: [], noRoute: false, storage: [],
     };
+    m.ports = def.ports.map((p) => ({
+      machine: m, col: col + p.dx, row: row + p.dy,
+      io: p.io, foup: null, reserved: false,
+    }));
     this.machines.push(m);
     return m;
   }
 
   removeMachine(m: Machine): boolean {
     if (!MACHINE_DEFS[m.kind].placeable) {
-      this.onMessage('投入口・出荷口は撤去できません');
+      this.onMessage('投入・出荷ステーションは撤去できません');
       return false;
     }
-    if (m.busyLot || m.queue.length > 0) {
-      this.onMessage('処理中・待機中のロットがあるため撤去できません');
+    if (
+      m.busyLot || m.holdLot || m.storage.length > 0 ||
+      m.ports.some((p) => p.foup || p.reserved)
+    ) {
+      this.onMessage('ロットが残っている装置は撤去できません');
       return false;
     }
     this.machines = this.machines.filter((x) => x !== m);
     return true;
+  }
+
+  removeRailTile(c: number, r: number) {
+    const k = tkey(c, r);
+    if (this.fleet.isOccupied(k)) {
+      this.onMessage('ビークルがいる区間は撤去できません');
+      return;
+    }
+    this.rail.removeTile(k);
   }
 
   startMaintenance(m: Machine): boolean {
@@ -102,6 +149,8 @@ export class Game {
     return true;
   }
 
+  // ---- 更新 ----
+
   update(rawDt: number) {
     if (this.paused) return;
     const dt = rawDt * this.speed;
@@ -109,25 +158,58 @@ export class Game {
 
     this.updateSpawn(dt);
     for (const m of this.machines) this.updateMachine(m, dt);
-    for (const lot of [...this.lots]) this.updateLot(lot, dt);
+
+    this.dispatchTimer -= dt;
+    if (this.dispatchTimer <= 0) {
+      this.dispatchTimer = 0.25;
+      this.dispatch();
+    }
+    this.fleet.update(dt);
   }
 
   private updateSpawn(dt: number) {
     this.spawnTimer += dt;
     if (this.spawnTimer < this.spawnInterval) return;
-    if (this.lots.length >= WIP_CAP) return; // 上限に達したら待つ(タイマーは満杯のまま)
-    this.spawnTimer = 0;
     const load = this.machines.find((m) => m.kind === 'load');
-    if (!load) return;
-    const { x, y } = centerOf(load);
-    this.lots.push({
-      id: nextId++, x, y,
-      step: 0, yield_: 1, state: 'waiting', target: null,
-      jitterX: rand(-14, 14), jitterY: rand(-14, 14),
-    });
+    const port = load?.ports.find((p) => p.io === 'out' && !p.foup && !p.reserved);
+    if (!port) return; // 払い出しポートが満杯なら待つ(自然なWIP制限)
+    this.spawnTimer = 0;
+    const lot: Lot = { id: nextId++, step: 0, yield_: 1 };
+    this.lots.push(lot);
+    port.foup = lot;
   }
 
   private updateMachine(m: Machine, dt: number) {
+    if (m.kind === 'load') return;
+
+    if (m.kind === 'ship') {
+      for (const p of m.ports) {
+        if (p.foup) {
+          this.completedCount++;
+          this.completions.push({ t: this.simTime, y: p.foup.yield_ });
+          this.lots = this.lots.filter((l) => l !== p.foup);
+          p.foup = null;
+        }
+      }
+      return;
+    }
+
+    if (m.kind === 'stocker') {
+      // 入力ポート → 内部棚、内部棚 → 空き出力ポート
+      for (const p of m.ports) {
+        if (p.io === 'in' && p.foup && m.storage.length < STOCKER_CAP) {
+          m.storage.push(p.foup);
+          p.foup = null;
+        }
+      }
+      for (const p of m.ports) {
+        if (p.io === 'out' && !p.foup && m.storage.length > 0) {
+          p.foup = m.storage.shift()!;
+        }
+      }
+      return;
+    }
+
     if (m.maintLeft > 0) {
       m.maintLeft -= dt;
       if (m.maintLeft <= 0) {
@@ -137,24 +219,29 @@ export class Game {
       return;
     }
 
-    // 処理の進行
+    // 出力待ちロットを空いた出力ポートへ
+    if (m.holdLot) {
+      const out = m.ports.find((p) => p.io === 'out' && !p.foup);
+      if (out) {
+        out.foup = m.holdLot;
+        m.holdLot = null;
+      }
+    }
+
     if (m.busyLot) {
       m.procLeft -= dt;
       if (m.procLeft <= 0) this.finishJob(m);
       return;
     }
 
-    // 到着済みロットの処理開始
-    const next = m.queue.find((l) => m.arrived.has(l));
-    if (next) {
-      m.queue = m.queue.filter((l) => l !== next);
-      m.arrived.delete(next);
-      m.busyLot = next;
+    // 出力が詰まっている間は次の処理を始めない
+    if (m.holdLot) return;
+
+    const inPort = m.ports.find((p) => p.io === 'in' && p.foup);
+    if (inPort) {
+      m.busyLot = inPort.foup;
+      inPort.foup = null;
       m.procLeft = MACHINE_DEFS[m.kind].procTime;
-      next.state = 'processing';
-      const c = centerOf(m);
-      next.x = c.x;
-      next.y = c.y;
     }
   }
 
@@ -164,84 +251,81 @@ export class Game {
     m.jobs++;
     const def = MACHINE_DEFS[m.kind];
 
-    // 汚れた装置ほど欠陥率が上がる(清浄度50%で基礎欠陥率の3倍)
+    // 汚れた装置ほど欠陥率が上がる(清浄度が下がると最大5倍)
     const dirtiness = 1 - m.cleanliness;
     const defect = def.baseDefect * (1 + dirtiness * 4) * rand(0.5, 1.5);
     lot.yield_ = Math.max(0, lot.yield_ * (1 - defect));
     m.cleanliness = Math.max(MIN_CLEANLINESS, m.cleanliness - def.wear);
 
     lot.step++;
-    lot.jitterX = rand(-14, 14);
-    lot.jitterY = rand(-14, 14);
 
-    // 検査(最終工程)完了 → 歩留まり確定。低すぎれば廃棄
+    // 最終工程(検査)完了 → 歩留まり確定。基準未満は廃棄
     if (lot.step >= RECIPE.length && lot.yield_ < SCRAP_THRESHOLD) {
       this.scrappedCount++;
       this.lots = this.lots.filter((l) => l !== lot);
       return;
     }
-    lot.state = 'waiting';
-    lot.target = null;
+    m.holdLot = lot;
   }
 
-  private updateLot(lot: Lot, dt: number) {
-    if (lot.state === 'waiting') {
-      this.dispatch(lot);
-      return;
-    }
-    if (lot.state !== 'moving' || !lot.target) return;
+  // 出力ポートのFOUPに搬送ジョブを割り当てる
+  private dispatch() {
+    for (const m of this.machines) m.noRoute = false;
 
-    const { x: tx, y: ty } = centerOf(lot.target);
-    const dx = tx - lot.x;
-    const dy = ty - lot.y;
-    const dist = Math.hypot(dx, dy);
-    const stepDist = LOT_SPEED * dt;
-    if (dist <= stepDist) {
-      lot.x = tx;
-      lot.y = ty;
-      this.arrive(lot, lot.target);
-    } else {
-      lot.x += (dx / dist) * stepDist;
-      lot.y += (dy / dist) * stepDist;
-    }
-  }
-
-  private arrive(lot: Lot, m: Machine) {
-    if (m.kind === 'ship') {
-      this.completedCount++;
-      this.completions.push({ t: this.simTime, y: lot.yield_ });
-      this.lots = this.lots.filter((l) => l !== lot);
-      return;
-    }
-    lot.state = 'queued';
-    m.arrived.add(lot);
-  }
-
-  // 次工程を担当できる装置を探してロットを送り出す
-  private dispatch(lot: Lot) {
-    const kind: MachineKind =
-      lot.step >= RECIPE.length ? 'ship' : RECIPE[lot.step].kind;
-    const cap = kind === 'ship' ? Infinity : QUEUE_CAP;
-
-    let best: Machine | null = null;
-    let bestScore = Infinity;
     for (const m of this.machines) {
-      if (m.kind !== kind) continue;
-      if (m.maintLeft > 0) continue;
-      if (m.queue.length >= cap) continue;
-      const c = centerOf(m);
-      // 待ち行列の短さを最優先、同数なら近い装置
-      const score = m.queue.length * 100000 + Math.hypot(c.x - lot.x, c.y - lot.y);
-      if (score < bestScore) {
-        bestScore = score;
-        best = m;
+      for (const p of m.ports) {
+        if (p.io !== 'out' || !p.foup || p.reserved) continue;
+        const lot = p.foup;
+        const kind: MachineKind =
+          lot.step >= RECIPE.length ? 'ship' : RECIPE[lot.step].kind;
+
+        // 行き先候補: 空きin ポートを持つ装置(整備中は除く)。
+        // 混雑度(処理中+出力待ち+in予約済み)が最小、同点なら距離
+        let bestPort: Port | null = null;
+        let bestScore = Infinity;
+        for (const dest of this.machines) {
+          if (dest.kind !== kind || dest.maintLeft > 0) continue;
+          const inPort = dest.ports.find((x) => x.io === 'in' && !x.foup && !x.reserved);
+          if (!inPort) continue;
+          const load =
+            (dest.busyLot ? 1 : 0) + (dest.holdLot ? 1 : 0) +
+            dest.ports.filter((x) => x.io === 'in' && (x.foup || x.reserved)).length;
+          const dist = Math.hypot(inPort.col - p.col, inPort.row - p.row);
+          const score = load * 1000 + dist;
+          if (score < bestScore) {
+            bestScore = score;
+            bestPort = inPort;
+          }
+        }
+
+        // 行き先が満杯なら、ストッカーへ退避(リエントラントフローの
+        // デッドロック回避)。ストッカー発のロットは実行き先が空くまで待つ
+        if (!bestPort && m.kind !== 'stocker') {
+          for (const dest of this.machines) {
+            if (dest.kind !== 'stocker') continue;
+            if (dest.storage.length >= STOCKER_CAP) continue;
+            const inPort = dest.ports.find((x) => x.io === 'in' && !x.foup && !x.reserved);
+            if (!inPort) continue;
+            const dist = Math.hypot(inPort.col - p.col, inPort.row - p.row);
+            if (dist < bestScore) {
+              bestScore = dist;
+              bestPort = inPort;
+            }
+          }
+        }
+        if (!bestPort) continue; // 空きが出るまで待つ
+
+        // レール経路の確認(ピックアップ地点 → 降ろし地点)
+        if (!this.rail.path(tkey(p.col, p.row), portKey(bestPort))) {
+          m.noRoute = true;
+          continue;
+        }
+        if (this.fleet.tryAssign({ from: p, to: bestPort, lot })) {
+          p.reserved = true;
+          bestPort.reserved = true;
+        }
       }
     }
-    if (!best) return; // 行き先がない間はその場で待機
-
-    best.queue.push(lot);
-    lot.target = best;
-    lot.state = 'moving';
   }
 
   getStats(): Stats {
@@ -265,12 +349,11 @@ export class Game {
       throughput,
       avgYield,
       stepWip,
+      ohtTotal: this.fleet.vehicles.length,
+      ohtSize: this.fleet.size,
+      ohtIdle: this.fleet.idleCount(),
     };
   }
-}
-
-export function centerOf(m: Machine): { x: number; y: number } {
-  return { x: (m.col + 0.5) * TILE, y: (m.row + 0.5) * TILE };
 }
 
 function rand(min: number, max: number): number {
