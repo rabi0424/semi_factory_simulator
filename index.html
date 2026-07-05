@@ -4,117 +4,188 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>半導体工場シミュレーター</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='3' width='10' height='10' rx='1.5' fill='%23ffd54f'/%3E%3Crect x='6' y='6' width='4' height='4' fill='%2312151c'/%3E%3C/svg%3E" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='3' width='10' height='10' rx='1.5' fill='%237761a7'/%3E%3Crect x='6' y='6' width='4' height='4' fill='%23f2f4f6'/%3E%3C/svg%3E" />
   <style>
     :root {
-      --bg: #12151c;
-      --panel: #1b2029;
-      --panel2: #232a36;
-      --border: #333c4d;
-      --text: #dbe2ee;
-      --dim: #8b96a8;
-      --accent: #ffd54f;
+      --ink: #243138;
+      --dim: #5d6d76;
+      --line: #d4dbdf;
+      --surface: #ffffff;
+      --surface2: #f4f6f7;
+      --accent: #7761a7;
+      --bad: #cc4f44;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; overflow: hidden; }
     body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: "Hiragino Sans", "Noto Sans JP", "Yu Gothic", sans-serif;
-      font-size: 14px;
-      display: flex;
-      justify-content: center;
-      padding: 12px;
+      font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP",
+        "Yu Gothic UI", system-ui, sans-serif;
+      font-size: 13px;
+      color: var(--ink);
+      background: #dce1e4;
     }
-    #app { display: flex; gap: 12px; align-items: flex-start; }
-    #stage { position: relative; }
-    canvas {
-      background: #161a22;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      display: block;
-      cursor: crosshair;
+    b, .stat b { font-variant-numeric: tabular-nums; }
+    #game { position: fixed; inset: 0; display: block; cursor: crosshair; }
+    button { font-family: inherit; color: inherit; }
+
+    /* ---- 上部ステータスストリップ ---- */
+    #topbar {
+      position: fixed; top: 0; left: 0; right: 0; height: 42px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      display: flex; align-items: center; gap: 18px;
+      padding: 0 14px;
+      user-select: none;
+      z-index: 10;
     }
-    #toast {
-      position: absolute;
-      left: 50%;
-      bottom: 16px;
-      transform: translateX(-50%);
-      background: rgba(20, 24, 32, 0.92);
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 6px 14px;
-      pointer-events: none;
-      opacity: 0;
-      transition: opacity 0.25s;
+    .brand { font-weight: 700; font-size: 12px; letter-spacing: 0.04em; white-space: nowrap; }
+    .brand .tag {
+      margin-left: 6px; font-size: 9px; font-weight: 600; color: var(--accent);
+      border: 1px solid currentColor; padding: 1px 4px; letter-spacing: 0.1em;
+      vertical-align: 1px;
+    }
+    .stats { display: flex; align-items: center; gap: 0; }
+    .stat {
+      display: flex; align-items: baseline; gap: 6px;
+      padding: 0 12px; border-left: 1px solid var(--line);
       white-space: nowrap;
     }
-    #panel {
-      width: 320px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
+    .stat label { font-size: 10px; color: var(--dim); letter-spacing: 0.06em; }
+    .stat b { font-size: 14px; }
+    .stat b i { font-style: normal; font-size: 10px; color: var(--dim); }
+    .stat.oht button {
+      width: 20px; height: 20px; border: 1px solid var(--line); background: var(--surface2);
+      cursor: pointer; font-size: 13px; line-height: 1; align-self: center;
     }
-    .box {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 12px;
+    .stat.oht button:hover { border-color: var(--accent); }
+    .grow { flex: 1; }
+    .ctl { display: flex; align-items: center; gap: 10px; }
+    .ctl .spawn { display: flex; align-items: center; gap: 6px; }
+    .ctl .spawn label { font-size: 10px; color: var(--dim); }
+    .ctl .spawn input { width: 90px; accent-color: var(--accent); }
+    .ctl .spawn b { font-size: 12px; min-width: 26px; }
+    .tbtn, .seg button {
+      border: 1px solid var(--line); background: var(--surface);
+      padding: 4px 9px; cursor: pointer; font-size: 12px;
     }
-    .box h2 {
-      font-size: 12px;
-      color: var(--dim);
-      font-weight: 600;
-      margin-bottom: 8px;
-      letter-spacing: 0.05em;
+    .tbtn:hover, .seg button:hover { border-color: var(--accent); }
+    .tbtn.on, .seg button.on { background: #efeaf7; border-color: var(--accent); color: var(--accent); }
+    .seg { display: inline-flex; }
+    .seg button + button { border-left: none; }
+
+    /* ---- 下部ホットバー ---- */
+    #hotbar {
+      position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 4px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      padding: 5px;
+      box-shadow: 0 4px 16px rgba(50, 70, 80, 0.12);
+      user-select: none;
+      z-index: 10;
     }
-    #palette { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    #palette button, .btn {
-      background: var(--panel2);
-      border: 1px solid var(--border);
-      color: var(--text);
-      border-radius: 6px;
-      padding: 7px 8px;
+    #hotbar .tool {
+      position: relative;
+      width: 62px; height: 58px;
+      border: 1px solid var(--line); background: var(--surface);
       cursor: pointer;
-      font-size: 13px;
-      text-align: left;
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
     }
-    #palette button:hover, .btn:hover { border-color: #5a687e; filter: brightness(1.15); }
-    #palette button.active, .btn.active { border-color: var(--accent); background: #3a3320; }
-    #palette button .sw {
-      display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px;
+    #hotbar .tool:hover { border-color: var(--accent); }
+    #hotbar .tool.on {
+      background: #efeaf7; border-color: var(--accent);
+      box-shadow: inset 0 -2px 0 var(--accent);
     }
-    #palette button small { color: var(--dim); display: block; margin-left: 16px; }
-    .statrow { display: flex; justify-content: space-between; padding: 2px 0; }
-    .statrow b { font-variant-numeric: tabular-nums; }
-    #recipe .step {
-      display: flex; align-items: center; gap: 8px; padding: 3px 0;
-      font-size: 13px;
+    #hotbar .tool i {
+      position: absolute; top: 2px; left: 4px;
+      font-style: normal; font-size: 9px; color: var(--dim);
     }
-    #recipe .step .sw { width: 9px; height: 9px; border-radius: 2px; flex: none; }
-    #recipe .step .cnt {
-      margin-left: auto; font-variant-numeric: tabular-nums;
-      color: var(--dim); min-width: 60px; text-align: right;
+    #hotbar .tool span { font-size: 9.5px; color: var(--ink); letter-spacing: 0.02em; }
+
+    /* ---- 工程フローパネル ---- */
+    #flow {
+      position: fixed; top: 52px; right: 10px; width: 218px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      user-select: none;
+      z-index: 9;
     }
-    #recipe .step .bar {
-      height: 6px; background: #2c3442; border-radius: 3px; width: 70px; overflow: hidden; flex: none;
+    #flow.hidden { display: none; }
+    #flow h2 {
+      font-size: 10px; color: var(--dim); font-weight: 600;
+      letter-spacing: 0.08em; margin-bottom: 7px;
     }
-    #recipe .step .bar i { display: block; height: 100%; background: var(--accent); }
-    #controls { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
-    input[type=range] { width: 100%; }
-    .dim { color: var(--dim); font-size: 12px; }
-    #machineinfo .btn { margin-top: 6px; margin-right: 6px; text-align: center; }
-    .btn:disabled { opacity: 0.4; cursor: default; }
-    .btn.danger { border-color: #7e4040; }
+    #flow .step { display: flex; align-items: center; gap: 6px; padding: 2.5px 0; }
+    #flow .sw { width: 8px; height: 8px; flex: none; }
+    #flow .nm { font-size: 11.5px; }
+    #flow .bar {
+      margin-left: auto; width: 52px; height: 5px; background: var(--surface2);
+      overflow: hidden; flex: none;
+    }
+    #flow .bar i { display: block; height: 100%; background: var(--accent); }
+    #flow .cnt { font-size: 11.5px; min-width: 16px; text-align: right; }
+
+    /* ---- コンテキストカード ---- */
+    #ctxcard {
+      position: fixed; width: 224px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-top: 3px solid var(--accent);
+      box-shadow: 0 6px 20px rgba(50, 70, 80, 0.16);
+      padding: 10px 12px 12px;
+      z-index: 11;
+    }
+    #ctxcard .head {
+      display: flex; justify-content: space-between; align-items: baseline;
+      margin-bottom: 7px;
+    }
+    #ctxcard .head .nm { font-weight: 700; font-size: 13px; }
+    #ctxcard .head .lbl { font-size: 10px; color: var(--dim); letter-spacing: 0.05em; }
+    #ctxcard .row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 2.5px 0; font-size: 12px;
+    }
+    #ctxcard .row span:first-child { color: var(--dim); font-size: 11px; min-width: 44px; }
+    #ctxcard .row b { margin-left: auto; }
+    #ctxcard .gauge {
+      flex: 1; height: 5px; background: var(--surface2); overflow: hidden;
+    }
+    #ctxcard .gauge i { display: block; height: 100%; }
+    #ctxcard .alert {
+      margin-top: 6px; padding: 5px 8px; font-size: 11px;
+      color: #8a6414; background: #faf3e0; border: 1px solid #ecd9a8;
+    }
+    #ctxcard .btns { display: flex; gap: 6px; margin-top: 10px; }
+    #ctxcard .btns button {
+      flex: 1; padding: 5px 0; font-size: 12px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--surface);
+    }
+    #ctxcard .btns button:hover:not(:disabled) { border-color: var(--accent); }
+    #ctxcard .btns button:disabled { opacity: 0.4; cursor: default; }
+    #ctxcard .btns button.danger { color: var(--bad); }
+    #ctxcard .btns button.danger:hover { border-color: var(--bad); }
+
+    /* ---- トースト ---- */
+    #toast {
+      position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%);
+      background: rgba(36, 49, 56, 0.92); color: #f2f4f6;
+      padding: 7px 16px; font-size: 12px;
+      opacity: 0; transition: opacity 0.25s; pointer-events: none;
+      white-space: nowrap;
+      z-index: 12;
+    }
+    #toast.show { opacity: 1; }
+
+    @media (prefers-reduced-motion: reduce) {
+      #toast { transition: none; }
+    }
   </style>
 </head>
 <body>
-  <div id="app">
-    <div id="stage">
-      <canvas id="game"></canvas>
-      <div id="toast"></div>
-    </div>
-    <div id="panel"></div>
-  </div>
+  <canvas id="game"></canvas>
+  <div id="hud"></div>
+  <div id="toast"></div>
   <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
