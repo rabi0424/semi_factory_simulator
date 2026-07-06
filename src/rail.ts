@@ -11,6 +11,7 @@ export const parseKey = (k: TileKey): { c: number; r: number } => {
 export class RailNetwork {
   private out = new Map<TileKey, Set<TileKey>>();
   private inc = new Map<TileKey, Set<TileKey>>();
+  version = 0; // 変更検知用(描画の再構築トリガー)
 
   addEdge(a: TileKey, b: TileKey) {
     const pa = parseKey(a);
@@ -20,6 +21,7 @@ export class RailNetwork {
     if (!this.inc.has(b)) this.inc.set(b, new Set());
     this.out.get(a)!.add(b);
     this.inc.get(b)!.add(a);
+    this.version++;
   }
 
   hasEdge(a: TileKey, b: TileKey): boolean {
@@ -40,6 +42,7 @@ export class RailNetwork {
     this.out.delete(k);
     for (const a of this.inc.get(k) ?? []) this.out.get(a)?.delete(k);
     this.inc.delete(k);
+    this.version++;
   }
 
   // BFS 最短経路(タイル列、from を含む)。到達不能なら null
