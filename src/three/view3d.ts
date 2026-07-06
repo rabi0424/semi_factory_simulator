@@ -18,6 +18,12 @@ import type { ViewState } from '../view';
 export const RAIL_Y = 2.35;       // 天井レール高さ
 const FOUP_UNDER_VEH = 0.34;      // 走行中FOUPのビークル下面からの距離
 const FOUP_DOCK_Y = 0.24;         // ドック上のFOUP基準高さ
+const PLATE_FADE_NEAR = 9;        // この距離までは銘板を全表示
+const PLATE_FADE_FAR = 22;        // この距離を超えると銘板を完全に消す
+
+function clamp01(t: number): number {
+  return Math.max(0, Math.min(1, t));
+}
 
 // 装置本体の高さ [ユニット]
 const BODY_H: Record<MachineKind, number> = {
@@ -183,6 +189,10 @@ function roundRect(
   g.arcTo(x, y + h, x, y, r);
   g.arcTo(x, y, x + w, y, r);
   g.closePath();
+}
+
+function easeInOutCubic(t: number): number {
+  return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
 }
 
 function buildAlertSprite(): THREE.Sprite {
@@ -386,6 +396,7 @@ export class View3D {
   private previewGroup = new THREE.Group();
   private eraseRing: THREE.Mesh;
   private selBox: THREE.LineSegments;
+  private selGlow: THREE.Mesh;
 
   constructor(private scene: THREE.Scene) {
     scene.add(this.railGroup);
@@ -399,14 +410,25 @@ export class View3D {
 
     this.selBox = new THREE.LineSegments(
       new THREE.EdgesGeometry(GEO.box),
-      new THREE.LineBasicMaterial({ color: '#7761a7' }),
+      new THREE.LineBasicMaterial({ color: '#7761a7', transparent: true }),
     );
     this.selBox.visible = false;
     scene.add(this.selBox);
+
+    this.selGlow = new THREE.Mesh(
+      GEO.circle,
+      new THREE.MeshBasicMaterial({
+        color: '#7761a7', transparent: true, opacity: 0.3,
+        depthWrite: false, blending: THREE.AdditiveBlending,
+      }),
+    );
+    this.selGlow.rotation.x = -Math.PI / 2;
+    this.selGlow.visible = false;
+    scene.add(this.selGlow);
   }
 
-  sync(game: Game, vs: ViewState) {
-    this.syncMachines(game, vs);
+  sync(game: Game, vs: ViewState, camera: THREE.Camera) {
+    this.syncMachines(game, vs, camera);
     this.syncRails(game);
     this.syncVehicles(game, vs);
     this.syncHeat(game, vs);
@@ -415,7 +437,7 @@ export class View3D {
 
   // ---- 装置 ----
 
-  private syncMachines(game: Game, vs: ViewState) {
+  private syncMachines(game: Game, vs: ViewState, camera: THREE.Camera) {
     const seen = new Set<number>();
     for (const m of game.machines) {
       seen.add(m.id);
@@ -425,7 +447,7 @@ export class View3D {
         this.machineViews.set(m.id, view);
         this.scene.add(view.group);
       }
-      this.updateMachine(view, m, vs);
+      this.updateMachine(view, m, vs, camera);
     }
     for (const [id, view] of this.machineViews) {
       if (!seen.has(id)) {
@@ -436,7 +458,7 @@ export class View3D {
     }
   }
 
-  private updateMachine(view: MachineView, m: Machine, vs: ViewState) {
+  private updateMachine(view: MachineView, m: Machine, vs: ViewState, camera: THREE.Camera) {
     const def = MACHINE_DEFS[m.kind];
     const blink = Math.sin(vs.time * 7) > 0;
 
@@ -486,8 +508,21 @@ export class View3D {
       );
     }
 
-    // 経路なし警告
+    // 経路なし警告(距離フェードの対象外。常に見えるようにする)
     view.alert.visible = m.noRoute && Math.sin(vs.time * 5) > -0.3;
+
+    // 銘板の距離フェード: ズームアウトすると小さな銘板が密集して読めなく
+    // なるので、遠いものは透明にして視界のクラッタを減らす。選択中は無視
+    const plateMat = view.plate.sprite.material as THREE.SpriteMaterial;
+    if (vs.selected === m) {
+      plateMat.opacity = 1;
+      view.plate.sprite.visible = true;
+    } else {
+      const dist = camera.position.distanceTo(view.group.position);
+      const t = clamp01((dist - PLATE_FADE_NEAR) / (PLATE_FADE_FAR - PLATE_FADE_NEAR));
+      plateMat.opacity = 1 - t;
+      view.plate.sprite.visible = t < 0.98;
+    }
   }
 
   // ---- レール ----
@@ -584,9 +619,10 @@ export class View3D {
       ledMat.emissive.set('#000');
     }
 
-    // ホイスト(ワイヤー + 吊り下げFOUP)
+    // ホイスト(ワイヤー + 吊り下げFOUP)。状態遷移のタイミング(v.hoistT)は
+    // シム側で管理されたまま、見た目の落下量だけイーズイン/アウトで滑らかにする
     const maxDrop = RAIL_Y + 0.16 - 0.1 - FOUP_DOCK_Y - 0.2;
-    const drop = v.hoistT * maxDrop;
+    const drop = easeInOutCubic(v.hoistT) * maxDrop;
     const hoisting = drop > 0.02;
     const showFoup = v.carrying !== null;
     for (const c of view.cables) {
@@ -645,13 +681,27 @@ export class View3D {
   // ---- ツールオーバーレイ ----
 
   private syncOverlays(game: Game, vs: ViewState) {
-    // 選択枠
+    // 選択ハイライト: 枠線 + 床のグロー(どちらもパルスさせて視認性を上げる)
     const sel = vs.selected;
     this.selBox.visible = !!sel;
+    this.selGlow.visible = !!sel;
     if (sel) {
+      const accent = MACHINE_DEFS[sel.kind].accent;
+      const pulse = 0.5 + 0.5 * Math.sin(vs.time * 3);
+
       const h = BODY_H[sel.kind] + 0.7;
       this.selBox.scale.set(sel.w + 0.1, h, sel.h + 0.1);
       this.selBox.position.set(sel.col + sel.w / 2, h / 2, sel.row + sel.h / 2);
+      const boxMat = this.selBox.material as THREE.LineBasicMaterial;
+      boxMat.color.set(accent);
+      boxMat.opacity = 0.65 + 0.35 * pulse;
+
+      const radius = Math.max(sel.w, sel.h) / 2 + 0.35;
+      this.selGlow.scale.setScalar((radius + 0.05 * pulse) * 2);
+      this.selGlow.position.set(sel.col + sel.w / 2, 0.025, sel.row + sel.h / 2);
+      const glowMat = this.selGlow.material as THREE.MeshBasicMaterial;
+      glowMat.color.set(accent);
+      glowMat.opacity = 0.2 + 0.16 * pulse;
     }
 
     // 設置ゴースト

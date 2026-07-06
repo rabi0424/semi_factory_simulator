@@ -191,7 +191,7 @@ function frame(now: number) {
   vs.time += dt;
 
   game.update(dt);
-  view3d.sync(game, vs);
+  view3d.sync(game, vs, sceneCtx.camera);
   sceneCtx.controls.update();
   sceneCtx.renderer.render(sceneCtx.scene, sceneCtx.camera);
 
