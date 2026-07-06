@@ -15,6 +15,8 @@ interface UIOpts {
   game: Game;
   vs: ViewState;
   worldToScreen: (x: number, y: number) => { x: number; y: number };
+  getMode: () => '2d' | '3d';
+  toggleMode: () => void;
 }
 
 interface ToolDef {
@@ -27,7 +29,7 @@ interface ToolDef {
 const PLACEABLE: MachineKind[] = ['clean', 'depo', 'litho', 'etch', 'furnace', 'inspect'];
 
 export function createUI(opts: UIOpts) {
-  const { root, game, vs, worldToScreen } = opts;
+  const { root, game, vs, worldToScreen, getMode, toggleMode } = opts;
 
   root.innerHTML = `
     <header id="topbar">
@@ -57,6 +59,7 @@ export function createUI(opts: UIOpts) {
         <span class="seg" id="speedSeg">
           <button data-speed="1" class="on">1x</button><button data-speed="2">2x</button><button data-speed="4">4x</button>
         </span>
+        <button id="modeBtn" class="tbtn" title="2D/3D表示切替 (Shift)">3D表示</button>
         <button id="heatBtn" class="tbtn" title="渋滞ヒートマップ (H)">渋滞</button>
         <button id="flowBtn" class="tbtn on" title="製品/工程パネル (F)">工程</button>
         <span class="menuwrap">
@@ -129,6 +132,7 @@ export function createUI(opts: UIOpts) {
 
   function setTool(tool: Tool) {
     vs.tool = { ...tool };
+    vs.toolRot = 0; // 選択装置を変えたら向きは初期状態(手前=IN/OUT)に戻す
     if (tool.mode !== 'select') vs.selected = null;
     vs.railPath = [];
     syncTool();
@@ -195,6 +199,16 @@ export function createUI(opts: UIOpts) {
     heatBtn.classList.toggle('on', vs.showHeat);
   };
   heatBtn.addEventListener('click', toggleHeat);
+
+  const modeBtn = $('#modeBtn') as HTMLButtonElement;
+  const syncModeBtn = () => {
+    modeBtn.textContent = getMode() === '2d' ? '2D表示' : '3D表示';
+  };
+  modeBtn.addEventListener('click', () => {
+    toggleMode();
+    syncModeBtn();
+  });
+  syncModeBtn();
 
   // ---- データメニュー(セーブ/ロード) ----
   const dataPop = $('#dataPop');
@@ -487,6 +501,7 @@ export function createUI(opts: UIOpts) {
       drawSpark(st.throughput);
     }
 
+    syncModeBtn(); // Shiftキーでの切替もここで反映
     refreshCard();
   }
 

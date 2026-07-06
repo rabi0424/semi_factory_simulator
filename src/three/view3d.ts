@@ -20,6 +20,7 @@ const FOUP_UNDER_VEH = 0.34;      // 走行中FOUPのビークル下面からの
 const FOUP_DOCK_Y = 0.24;         // ドック上のFOUP基準高さ
 const PLATE_FADE_NEAR = 9;        // この距離までは銘板を全表示
 const PLATE_FADE_FAR = 22;        // この距離を超えると銘板を完全に消す
+const ORTHO_FADE_BASE_DIST = 13;  // 2Dモードでズーム=1のときの相当距離
 
 function clamp01(t: number): number {
   return Math.max(0, Math.min(1, t));
@@ -427,7 +428,7 @@ export class View3D {
     scene.add(this.selGlow);
   }
 
-  sync(game: Game, vs: ViewState, camera: THREE.Camera) {
+  sync(game: Game, vs: ViewState, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
     this.syncMachines(game, vs, camera);
     this.syncRails(game);
     this.syncVehicles(game, vs);
@@ -437,7 +438,7 @@ export class View3D {
 
   // ---- 装置 ----
 
-  private syncMachines(game: Game, vs: ViewState, camera: THREE.Camera) {
+  private syncMachines(game: Game, vs: ViewState, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
     const seen = new Set<number>();
     for (const m of game.machines) {
       seen.add(m.id);
@@ -458,7 +459,7 @@ export class View3D {
     }
   }
 
-  private updateMachine(view: MachineView, m: Machine, vs: ViewState, camera: THREE.Camera) {
+  private updateMachine(view: MachineView, m: Machine, vs: ViewState, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
     const def = MACHINE_DEFS[m.kind];
     const blink = Math.sin(vs.time * 7) > 0;
 
@@ -512,13 +513,17 @@ export class View3D {
     view.alert.visible = m.noRoute && Math.sin(vs.time * 5) > -0.3;
 
     // 銘板の距離フェード: ズームアウトすると小さな銘板が密集して読めなく
-    // なるので、遠いものは透明にして視界のクラッタを減らす。選択中は無視
+    // なるので、遠いものは透明にして視界のクラッタを減らす。選択中は無視。
+    // 2Dモード(直交カメラ)は物理距離が一定のため、代わりにズーム量を使う
     const plateMat = view.plate.sprite.material as THREE.SpriteMaterial;
     if (vs.selected === m) {
       plateMat.opacity = 1;
       view.plate.sprite.visible = true;
     } else {
-      const dist = camera.position.distanceTo(view.group.position);
+      const dist =
+        camera.type === 'OrthographicCamera'
+          ? ORTHO_FADE_BASE_DIST / camera.zoom
+          : camera.position.distanceTo(view.group.position);
       const t = clamp01((dist - PLATE_FADE_NEAR) / (PLATE_FADE_FAR - PLATE_FADE_NEAR));
       plateMat.opacity = 1 - t;
       view.plate.sprite.visible = t < 0.98;

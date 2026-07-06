@@ -1,15 +1,23 @@
 // Three.js シーン基盤: レンダラー・軌道カメラ・照明・クリーンルーム床・
 // タイルピッキング。ワールド座標の単位は「1タイル = 1」(x=列, z=行, y=上)。
+//
+// カメラは透視(3D)と直交・真上固定(2D)の2つを切り替えて使う。同じ
+// OrbitControls インスタンスの .object を差し替える方式で、パン位置や
+// ズームはカメラごとに保持されるため、モード切替のたびに元の見た目に戻る。
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { MAP_COLS, MAP_ROWS } from '../config';
 
+export type ViewMode = '2d' | '3d';
+
 export interface SceneCtx {
   renderer: THREE.WebGLRenderer;
   scene: THREE.Scene;
-  camera: THREE.PerspectiveCamera;
+  camera: THREE.PerspectiveCamera | THREE.OrthographicCamera; // 現在アクティブなカメラ
   controls: OrbitControls;
+  mode: ViewMode;
+  setMode: (mode: ViewMode) => void;
   resize: () => void;
   // 画面座標 → 床平面(y=0)上のタイル
   pickTile: (clientX: number, clientY: number) => {
@@ -18,6 +26,9 @@ export interface SceneCtx {
   // ワールド座標 → 画面px
   worldToScreen: (x: number, y: number, z: number) => { x: number; y: number };
 }
+
+const ORTHO_HEIGHT = 30;  // 直交カメラの固定高度(ズームは camera.zoom で行う)
+const ORTHO_VIEW_SIZE = 11; // 直交カメラの初期視野半高さ [ワールド単位]
 
 export function createScene(canvas: HTMLCanvasElement): SceneCtx {
   // ?lowfx で影とAAを切る軽量モード(非力な環境・E2Eテスト用)
@@ -35,22 +46,45 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
   scene.background = new THREE.Color('#dfe4e7');
   scene.fog = new THREE.Fog('#dfe4e7', 55, 120);
 
-  const camera = new THREE.PerspectiveCamera(
-    40, window.innerWidth / window.innerHeight, 0.1, 300,
-  );
   const cx = MAP_COLS / 2;
   const cz = MAP_ROWS / 2;
-  camera.position.set(cx, 25, cz + 15.5);
 
-  const controls = new OrbitControls(camera, canvas);
+  // ---- 3Dカメラ(透視) ----
+  const perspCam = new THREE.PerspectiveCamera(
+    40, window.innerWidth / window.innerHeight, 0.1, 300,
+  );
+  perspCam.position.set(cx, 25, cz + 15.5);
+
+  // ---- 2Dカメラ(直交・真上固定)----
+  // 装置の真上にレールを正確に敷けるよう、パースによる見た目のズレを
+  // なくすため常に真上から見下ろす。回転は無効、パン/ズームのみ
+  const aspect0 = window.innerWidth / window.innerHeight;
+  const orthoCam = new THREE.OrthographicCamera(
+    -ORTHO_VIEW_SIZE * aspect0, ORTHO_VIEW_SIZE * aspect0,
+    ORTHO_VIEW_SIZE, -ORTHO_VIEW_SIZE, 0.1, 300,
+  );
+  orthoCam.position.set(cx, ORTHO_HEIGHT, cz);
+  orthoCam.zoom = 1;
+  orthoCam.updateProjectionMatrix();
+
+  let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera = perspCam;
+  let mode: ViewMode = '3d';
+
+  const controls = new OrbitControls<THREE.PerspectiveCamera | THREE.OrthographicCamera>(
+    camera, canvas,
+  );
   controls.target.set(cx, 0, cz + 1);
   controls.enableDamping = true;
   controls.dampingFactor = 0.09;
   controls.minDistance = 5;
   controls.maxDistance = 48;
-  controls.maxPolarAngle = Math.PI * 0.44; // 床の下に潜らない
+  controls.minZoom = 0.35;
+  controls.maxZoom = 4;
+  controls.maxPolarAngle = Math.PI * 0.44; // 床の下に潜らない(3Dのみ)
   controls.minPolarAngle = 0.05;
-  // 左ボタンはツール操作に使うため、カメラは右=回転 / 中=パン
+  // 左ボタンはツール操作に使うため、カメラ操作は中=パン、右=回転(3Dのみ)。
+  // 右クリックは装置設置時の回転(main.ts側でクリック判定)にも使うため、
+  // 2Dモードでは右ボタンをカメラ操作から完全に外す
   controls.mouseButtons = {
     LEFT: null as unknown as THREE.MOUSE,
     MIDDLE: THREE.MOUSE.PAN,
@@ -62,6 +96,25 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
   };
   controls.screenSpacePanning = false;
   controls.update();
+
+  function setMode(next: ViewMode) {
+    if (next === mode) return;
+    mode = next;
+    camera = mode === '2d' ? orthoCam : perspCam;
+    if (mode === '2d') {
+      // 直交カメラは常にターゲット直上(真上固定)。パンで動いた
+      // ターゲットのXZに合わせて位置を揃える
+      orthoCam.position.set(controls.target.x, ORTHO_HEIGHT, controls.target.z);
+      controls.enableRotate = false;
+      controls.mouseButtons.RIGHT = null as unknown as THREE.MOUSE;
+    } else {
+      controls.enableRotate = true;
+      controls.mouseButtons.RIGHT = THREE.MOUSE.ROTATE;
+    }
+    controls.object = camera;
+    controls.update();
+    resize();
+  }
 
   // ---- 照明 ----
   const hemi = new THREE.HemisphereLight('#ffffff', '#cdd6db', 1.35);
@@ -98,8 +151,14 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
 
   // ---- リサイズ ----
   const resize = () => {
-    camera.aspect = window.innerWidth / window.innerHeight;
-    camera.updateProjectionMatrix();
+    const aspect = window.innerWidth / window.innerHeight;
+    perspCam.aspect = aspect;
+    perspCam.updateProjectionMatrix();
+    orthoCam.left = -ORTHO_VIEW_SIZE * aspect;
+    orthoCam.right = ORTHO_VIEW_SIZE * aspect;
+    orthoCam.top = ORTHO_VIEW_SIZE;
+    orthoCam.bottom = -ORTHO_VIEW_SIZE;
+    orthoCam.updateProjectionMatrix();
     renderer.setSize(window.innerWidth, window.innerHeight);
   };
   resize();
@@ -136,7 +195,14 @@ export function createScene(canvas: HTMLCanvasElement): SceneCtx {
     };
   };
 
-  return { renderer, scene, camera, controls, resize, pickTile, worldToScreen };
+  return {
+    renderer, scene,
+    get camera() { return camera; },
+    controls,
+    get mode() { return mode; },
+    setMode,
+    resize, pickTile, worldToScreen,
+  } as SceneCtx;
 }
 
 // クリーンルーム床: パンチングパネル模様のテクスチャを1枚のキャンバスに生成
