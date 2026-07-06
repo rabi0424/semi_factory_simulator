@@ -180,9 +180,9 @@ export class Fleet {
     this.vehicles.push(v);
   }
 
-  update(dt: number) {
+  update(dt: number, portTiles: ReadonlySet<TileKey>) {
     this.decayHeat(dt);
-    for (const v of [...this.vehicles]) this.updateVehicle(v, dt);
+    for (const v of [...this.vehicles]) this.updateVehicle(v, dt, portTiles);
   }
 
   private despawn(v: Vehicle) {
@@ -191,7 +191,7 @@ export class Fleet {
     this.vehicles = this.vehicles.filter((x) => x !== v);
   }
 
-  private updateVehicle(v: Vehicle, dt: number) {
+  private updateVehicle(v: Vehicle, dt: number, portTiles: ReadonlySet<TileKey>) {
     switch (v.state) {
       case 'idle': {
         // 保有台数が減らされたら、手の空いた機体から退役
@@ -199,7 +199,7 @@ export class Fleet {
           this.despawn(v);
           return;
         }
-        this.wander(v, dt);
+        this.wander(v, dt, portTiles);
         return;
       }
       case 'toPickup':
@@ -312,11 +312,17 @@ export class Fleet {
     }
   }
 
-  // アイドル時はゆっくり前進を続ける(ポート上で立ち往生して塞がないため)
-  private wander(v: Vehicle, dt: number) {
+  // アイドル時はゆっくり前進を続ける(ポート上で立ち往生して塞がないため)。
+  // ポートタイルは実際の積み下ろし専用に空けておきたいので、空いている
+  // 非ポートの行き先があればそちらを優先する。さもないと、装置のIN/OUT
+  // タイルに複数のアイドル車両が居座って互いの唯一の出口を塞ぎ合い、
+  // その装置が永久に積み下ろし不能になるデッドロックが起きる
+  private wander(v: Vehicle, dt: number, portTiles: ReadonlySet<TileKey>) {
     if (!v.target) {
-      const outs = this.rail.outEdges(v.tile).filter((k) => this.isFree(k));
+      let outs = this.rail.outEdges(v.tile).filter((k) => this.isFree(k));
       if (outs.length === 0) return;
+      const nonPort = outs.filter((k) => !portTiles.has(k));
+      if (nonPort.length > 0) outs = nonPort;
       const next = outs[Math.floor(Math.random() * outs.length)];
       v.target = next;
       this.occ.set(next, v);

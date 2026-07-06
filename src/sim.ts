@@ -8,6 +8,7 @@ import {
 } from './config';
 import type { MachineKind, ProductId } from './config';
 import { RailNetwork, tkey } from './rail';
+import type { TileKey } from './rail';
 import { Fleet, portKey } from './oht';
 import type { VehState } from './oht';
 
@@ -77,6 +78,9 @@ export class Game {
   lots: Lot[] = [];
   rail = new RailNetwork();
   fleet = new Fleet(this.rail);
+  // 装置のロードポートが乗るタイル一覧。アイドル中のOHTがポート上に
+  // 居座って積み下ろしを永久に妨げないよう、徘徊時に避けるために使う
+  portTiles = new Set<TileKey>();
   simTime = 0;
   paused = false;
   speed = 1;
@@ -159,7 +163,14 @@ export class Game {
       io: p.io, foup: null, reserved: false, readyAt: -1,
     }));
     this.machines.push(m);
+    this.rebuildPortTiles();
     return m;
+  }
+
+  private rebuildPortTiles() {
+    this.portTiles = new Set(
+      this.machines.flatMap((m) => m.ports.map((p) => tkey(p.col, p.row))),
+    );
   }
 
   removeMachine(m: Machine): boolean {
@@ -175,6 +186,7 @@ export class Game {
       return false;
     }
     this.machines = this.machines.filter((x) => x !== m);
+    this.rebuildPortTiles();
     return true;
   }
 
@@ -216,7 +228,7 @@ export class Game {
       this.dispatchTimer = 0.25;
       this.dispatch();
     }
-    this.fleet.update(dt);
+    this.fleet.update(dt, this.portTiles);
 
     // スループット履歴(5秒粒度、最大10分)
     this.histTimer += dt;
