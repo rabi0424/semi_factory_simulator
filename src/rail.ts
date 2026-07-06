@@ -69,6 +69,24 @@ export class RailNetwork {
     return null;
   }
 
+  // from から到達可能な全ノード(ディスパッチの行き先フィルタ用)
+  reachableFrom(from: TileKey): Set<TileKey> {
+    const seen = new Set<TileKey>();
+    if (!this.hasNode(from)) return seen;
+    seen.add(from);
+    const queue: TileKey[] = [from];
+    while (queue.length > 0) {
+      const cur = queue.shift()!;
+      for (const next of this.out.get(cur) ?? []) {
+        if (!seen.has(next)) {
+          seen.add(next);
+          queue.push(next);
+        }
+      }
+    }
+    return seen;
+  }
+
   // 描画用に全エッジを列挙
   allEdges(): [TileKey, TileKey][] {
     const result: [TileKey, TileKey][] = [];
