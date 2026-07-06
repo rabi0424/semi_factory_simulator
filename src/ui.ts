@@ -2,12 +2,12 @@
 // 選択装置のコンテキストカード、製品/工程フローパネル。
 
 import {
-  MACHINE_DEFS, MAX_FLEET, TILE, PRODUCTS, PRODUCT_ORDER, stepsOf,
+  MACHINE_DEFS, MAX_FLEET, PRODUCTS, PRODUCT_ORDER, stepsOf,
   FURNACE_BATCH,
 } from './config';
 import type { MachineKind, ProductId } from './config';
 import { Game } from './sim';
-import type { ViewState, Tool } from './render';
+import type { ViewState, Tool } from './view';
 import { saveToLocal, clearLocal, exportFile, importFile } from './save';
 
 interface UIOpts {
@@ -337,8 +337,8 @@ export function createUI(opts: UIOpts) {
     const def = MACHINE_DEFS[m.kind];
     card.hidden = false;
 
-    // 画面上の装置右肩に追従
-    const p = worldToScreen((m.col + m.w) * TILE, (m.row - 0.4) * TILE);
+    // 画面上の装置右肩に追従(引数はタイル単位のワールドXZ)
+    const p = worldToScreen(m.col + m.w, m.row);
     card.style.left = `${Math.min(window.innerWidth - 240, Math.max(8, p.x + 8))}px`;
     card.style.top = `${Math.min(window.innerHeight - 260, Math.max(52, p.y))}px`;
 
