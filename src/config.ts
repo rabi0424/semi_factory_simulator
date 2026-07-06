@@ -233,8 +233,10 @@ export const SAVE_VERSION = 2;
 export const AUTOSAVE_INTERVAL = 10;  // [実秒]
 
 // ---- OHT(天井搬送) ----
-export const OHT_SPEED = 6;           // 走行速度 [タイル/秒]
+export const OHT_SPEED = 6;           // 巡航速度 [タイル/秒]
 export const OHT_IDLE_SPEED = 5;      // 空走(巡回)速度。遅すぎると後続の実車を塞ぐ
+export const OHT_ACCEL_TILES = 1;     // 発車/到着時の加減速に使うタイル数
+export const OHT_MIN_SPEED_FACTOR = 0.4; // 加減速区間の最低速度係数(巡航速度に対する比)
 export const HOIST_TIME = 0.5;        // 吊り上げ/下ろし片道 [秒]
 export const START_FLEET = 3;
 export const MAX_FLEET = 12;

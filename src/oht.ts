@@ -3,6 +3,7 @@
 
 import {
   TILE, OHT_SPEED, OHT_IDLE_SPEED, HOIST_TIME, START_FLEET,
+  OHT_ACCEL_TILES, OHT_MIN_SPEED_FACTOR,
 } from './config';
 import { RailNetwork, tkey, parseKey } from './rail';
 import type { TileKey } from './rail';
@@ -34,6 +35,11 @@ export class Vehicle {
   stuck = false;         // 経路喪失などで停止中
   retryTimer = 0;
 
+  // 現在の走行区間(発車〜到着)の長さ[タイル]と、発車からの累計距離。
+  // 加減速の位置(区間の何タイル目か)を判定するために使う
+  journeyLen = 1;
+  journeyPos = 0;
+
   constructor(tile: TileKey) {
     this.tile = tile;
   }
@@ -41,6 +47,16 @@ export class Vehicle {
 
 export function portKey(p: Port): TileKey {
   return tkey(p.col, p.row);
+}
+
+// 発車直後・到着直前のOHT_ACCEL_TILES区間だけ速度を落とす(S字カーブ)。
+// pos: 発車地点からの累計距離[タイル] / len: ジャーニー全長[タイル]
+function speedFactor(pos: number, len: number): number {
+  const distFromStart = pos;
+  const distToEnd = len - pos;
+  const raw = Math.min(1, distFromStart / OHT_ACCEL_TILES, distToEnd / OHT_ACCEL_TILES);
+  const eased = raw * raw * (3 - 2 * raw); // smoothstep
+  return Math.max(OHT_MIN_SPEED_FACTOR, eased);
 }
 
 export function vehiclePos(v: Vehicle): { x: number; y: number } {
@@ -118,6 +134,7 @@ export class Fleet {
       best.v.path = best.path.slice(1);
       best.v.stuck = false;
       best.v.retryTimer = 0;
+      this.startJourney(best.v);
       return true;
     }
     if (
@@ -129,10 +146,18 @@ export class Fleet {
       this.occ.set(fromKey, v);
       v.job = job;
       v.state = 'toPickup';
+      this.startJourney(v);
       this.vehicles.push(v);
       return true;
     }
     return false;
+  }
+
+  // 現在地から目的地までの残りタイル数をジャーニー長として記録
+  // (発車直後=加速、到着直前=減速の判定に使う)
+  private startJourney(v: Vehicle) {
+    v.journeyLen = Math.max(1, v.path.length + 1);
+    v.journeyPos = 0;
   }
 
   // セーブデータからビークルを復元。ホイスト途中の状態は走行状態に正規化する
@@ -255,6 +280,7 @@ export class Fleet {
           v.path = p.slice(1);
           v.stuck = false;
           v.retryTimer = 0;
+          this.startJourney(v); // 経路を引き直したので加減速の基準もリセット
           if (v.path.length === 0) continue;
         }
         const next = v.path[0];
@@ -271,14 +297,17 @@ export class Fleet {
         this.occ.set(next, v);
         v.progress = 0;
       }
-      const step = Math.min(remaining, 1 - v.progress);
+      // 発車直後・到着直前は減速係数を掛ける(区間の両端からの距離で判定)
+      const factor = speedFactor(v.journeyPos + v.progress, v.journeyLen);
+      const step = Math.min(remaining * factor, 1 - v.progress);
       v.progress += step;
-      remaining -= step;
+      remaining -= step / Math.max(factor, 1e-3);
       if (v.progress >= 1) {
         this.release(v.tile, v);
         v.tile = v.target!;
         v.target = null;
         v.progress = 0;
+        v.journeyPos++;
       }
     }
   }
