@@ -1,7 +1,10 @@
 // クリーンルーム調のワールド描画。
 // 床(パンチングパネル) → 装置(2.5D) → 天井レール → OHTビークルの順に重ねる。
 
-import { TILE, MAP_COLS, MAP_ROWS, MACHINE_DEFS, rotSize, rotPorts } from './config';
+import {
+  TILE, MAP_COLS, MAP_ROWS, MACHINE_DEFS, PRODUCTS, FURNACE_BATCH,
+  rotSize, rotPorts,
+} from './config';
 import type { MachineKind } from './config';
 import { parseKey, tkey } from './rail';
 import type { TileKey } from './rail';
@@ -201,7 +204,30 @@ function drawMachine(ctx: CanvasRenderingContext2D, m: Machine, vs: ViewState) {
     for (let s = 0; s < m.storage.length; s++) {
       const sx = x + i + 16 + (s % 3) * 22;
       const sy = ty + 34 + Math.floor(s / 3) * 20;
-      drawFoup(ctx, sx, sy);
+      drawFoup(ctx, sx, sy, productColor(m.storage[s]));
+    }
+  }
+
+  // 拡散炉は装填状況を天面に見せる
+  if (m.kind === 'furnace') {
+    ctx.fillStyle = C.dim;
+    ctx.font = '600 9px system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    const loadCount = m.busy.length > 0 ? m.busy.length : m.batch.length;
+    const stateLabel = m.busy.length > 0 ? '処理' : '装填';
+    ctx.fillText(`${stateLabel} ${loadCount}/${FURNACE_BATCH}`, x + W - i - 6, ty + 18);
+    const shown = m.busy.length > 0 ? m.busy : m.batch;
+    for (let s = 0; s < shown.length; s++) {
+      drawFoup(ctx, x + i + 20 + s * 24, ty + 42, productColor(shown[s]));
+    }
+    // 炉口の意匠(円形チャンバー)
+    ctx.strokeStyle = '#d8c2be';
+    ctx.lineWidth = 2;
+    for (let s = 0; s < FURNACE_BATCH; s++) {
+      ctx.beginPath();
+      ctx.arc(x + i + 20 + s * 24, ty + 38, 11, 0, Math.PI * 2);
+      ctx.stroke();
     }
   }
 
@@ -218,7 +244,7 @@ function drawMachine(ctx: CanvasRenderingContext2D, m: Machine, vs: ViewState) {
   }
 
   // 処理進捗
-  if (m.busyLot) {
+  if (m.busy.length > 0) {
     const p = 1 - m.procLeft / def.procTime;
     ctx.fillStyle = '#e6ebee';
     ctx.fillRect(x + i + 6, ty + th - 12, W - i * 2 - 12, 3);
@@ -297,7 +323,7 @@ function drawPortDock(ctx: CanvasRenderingContext2D, p: Port) {
   ctx.closePath();
   ctx.fill();
 
-  if (p.foup) drawFoup(ctx, cx, cy + 4);
+  if (p.foup) drawFoup(ctx, cx, cy + 4, productColor(p.foup));
 }
 
 function drawStackLight(
@@ -320,10 +346,16 @@ function drawStackLight(
         {
           color: C.bad,
           // 故障(未着手)は点滅で強く知らせる
-          on: m.broken ? (m.repairLeft > 0 || blink) : m.maintLeft > 0 || m.holdLot !== null,
+          on: m.broken
+            ? (m.repairLeft > 0 || blink)
+            : m.maintLeft > 0 || m.holdQueue.length > 0,
         },
-        { color: C.warn, on: !m.broken && m.maintLeft === 0 && !m.busyLot && !m.holdLot },
-        { color: C.ok, on: m.busyLot !== null },
+        {
+          color: C.warn,
+          on: !m.broken && m.maintLeft === 0 &&
+            m.busy.length === 0 && m.holdQueue.length === 0,
+        },
+        { color: C.ok, on: m.busy.length > 0 },
       ];
   // ポール
   ctx.strokeStyle = '#b3bdc4';
@@ -353,7 +385,12 @@ function drawStackLight(
   });
 }
 
-export function drawFoup(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
+export function drawFoup(
+  ctx: CanvasRenderingContext2D,
+  cx: number,
+  cy: number,
+  tag?: string, // 製品識別色(下部バンド)
+) {
   // FOUP: 半透明パープルのポッド
   rr(ctx, cx - 9, cy - 12, 18, 13, 2.5);
   ctx.fillStyle = C.foup;
@@ -364,10 +401,18 @@ export function drawFoup(ctx: CanvasRenderingContext2D, cx: number, cy: number) 
   // 蓋
   ctx.fillStyle = C.foupLid;
   ctx.fillRect(cx - 7, cy - 10, 14, 3);
+  // 製品タグ
+  if (tag) {
+    ctx.fillStyle = tag;
+    ctx.fillRect(cx - 7, cy - 2, 14, 2.5);
+  }
   // 天面ハンドル(OHT把持部)
   ctx.fillStyle = C.foupEdge;
   ctx.fillRect(cx - 4, cy - 14, 8, 2.5);
 }
+
+const productColor = (lot: { product: keyof typeof PRODUCTS }) =>
+  PRODUCTS[lot.product].color;
 
 // ---- レール ----
 
@@ -476,7 +521,7 @@ function drawVehicle(ctx: CanvasRenderingContext2D, v: Vehicle, time: number) {
       ctx.lineTo(x + 5, fy - 13);
       ctx.stroke();
     }
-    if (v.carrying) drawFoup(ctx, x, fy);
+    if (v.carrying) drawFoup(ctx, x, fy, productColor(v.carrying));
   }
 
   // 本体シャトル

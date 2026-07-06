@@ -1,8 +1,11 @@
 // HTMLオーバーレイのHUD: 上部ステータスストリップ、下部ホットバー、
-// 選択装置のコンテキストカード、工程フローパネル。
+// 選択装置のコンテキストカード、製品/工程フローパネル。
 
-import { MACHINE_DEFS, RECIPE, MAX_FLEET, TILE } from './config';
-import type { MachineKind } from './config';
+import {
+  MACHINE_DEFS, MAX_FLEET, TILE, PRODUCTS, PRODUCT_ORDER, stepsOf,
+  FURNACE_BATCH,
+} from './config';
+import type { MachineKind, ProductId } from './config';
 import { Game } from './sim';
 import type { ViewState, Tool } from './render';
 import { saveToLocal, clearLocal, exportFile, importFile } from './save';
@@ -21,7 +24,7 @@ interface ToolDef {
   drawIcon: (ctx: CanvasRenderingContext2D) => void;
 }
 
-const PLACEABLE: MachineKind[] = ['clean', 'depo', 'litho', 'etch', 'inspect', 'stocker'];
+const PLACEABLE: MachineKind[] = ['clean', 'depo', 'litho', 'etch', 'furnace', 'inspect'];
 
 export function createUI(opts: UIOpts) {
   const { root, game, vs, worldToScreen } = opts;
@@ -55,7 +58,7 @@ export function createUI(opts: UIOpts) {
           <button data-speed="1" class="on">1x</button><button data-speed="2">2x</button><button data-speed="4">4x</button>
         </span>
         <button id="heatBtn" class="tbtn" title="渋滞ヒートマップ (H)">渋滞</button>
-        <button id="flowBtn" class="tbtn on" title="工程フロー表示 (F)">工程</button>
+        <button id="flowBtn" class="tbtn on" title="製品/工程パネル (F)">工程</button>
         <span class="menuwrap">
           <button id="dataBtn" class="tbtn" title="セーブ/ロード">データ</button>
           <div id="dataPop" hidden>
@@ -68,7 +71,15 @@ export function createUI(opts: UIOpts) {
         </span>
       </div>
     </header>
-    <aside id="flow"></aside>
+    <aside id="flow">
+      <h2>製品ライン</h2>
+      <div id="prodTabs"></div>
+      <div id="flowSteps"></div>
+      <div class="spark">
+        <h2>スループット推移 <b id="sparkNow">--</b></h2>
+        <canvas id="sparkCv" width="194" height="42"></canvas>
+      </div>
+    </aside>
     <div id="ctxcard" hidden></div>
     <nav id="hotbar"></nav>
   `;
@@ -84,9 +95,16 @@ export function createUI(opts: UIOpts) {
       key: String(4 + i),
       name: MACHINE_DEFS[kind].name.replace('装置', ''),
       tool: { mode: 'place', kind } as Tool,
-      drawIcon: (c: CanvasRenderingContext2D) => iconMachine(c, MACHINE_DEFS[kind].accent, MACHINE_DEFS[kind].w),
+      drawIcon: (c: CanvasRenderingContext2D) =>
+        iconMachine(c, MACHINE_DEFS[kind].accent, MACHINE_DEFS[kind].w),
     })),
-    { key: '0', name: '装置撤去', tool: { mode: 'demolish', kind: null }, drawIcon: iconDemolish },
+    {
+      key: '0', name: 'ストッカー',
+      tool: { mode: 'place', kind: 'stocker' } as Tool,
+      drawIcon: (c: CanvasRenderingContext2D) =>
+        iconMachine(c, MACHINE_DEFS.stocker.accent, 2),
+    },
+    { key: 'X', name: '装置撤去', tool: { mode: 'demolish', kind: null }, drawIcon: iconDemolish },
   ];
 
   const hotbar = $('#hotbar');
@@ -125,7 +143,7 @@ export function createUI(opts: UIOpts) {
   syncTool();
 
   function selectToolByKey(key: string): boolean {
-    const td = toolDefs.find((t) => t.key === key);
+    const td = toolDefs.find((t) => t.key.toLowerCase() === key.toLowerCase());
     if (!td) return false;
     setTool(td.tool);
     return true;
@@ -215,24 +233,47 @@ export function createUI(opts: UIOpts) {
     afterLoad();
   });
 
-  // ---- 工程フローパネル ----
-  flowPanel.innerHTML =
-    `<h2>プロセスフロー</h2>` +
-    RECIPE.map(
-      (s, i) => `
-      <div class="step">
-        <span class="sw" style="background:${MACHINE_DEFS[s.kind].accent}"></span>
-        <span class="nm">${i + 1}. ${s.label}</span>
-        <span class="bar"><i></i></span>
-        <b class="cnt">0</b>
-      </div>`,
-    ).join('') +
-    `<div class="spark">
-      <h2>スループット推移 <b id="sparkNow">--</b></h2>
-      <canvas id="sparkCv" width="194" height="42"></canvas>
-    </div>`;
-  const stepCnt = [...flowPanel.querySelectorAll<HTMLElement>('.cnt')];
-  const stepBar = [...flowPanel.querySelectorAll<HTMLElement>('.bar i')];
+  // ---- 製品タブ + 工程フロー ----
+  const prodTabs = $('#prodTabs');
+  const flowSteps = $('#flowSteps');
+  let flowProduct: ProductId = 'diode';
+  let flowSig = '';
+  let stepCnt: HTMLElement[] = [];
+  let stepBar: HTMLElement[] = [];
+
+  function rebuildFlow() {
+    prodTabs.innerHTML = PRODUCT_ORDER.map((id) => {
+      const p = PRODUCTS[id];
+      if (!game.unlocked.has(id)) {
+        return `<button class="ptab locked" disabled title="累計完成 ${p.unlockAt} ロットで解禁">
+          🔒 ${p.name}<small>あと${Math.max(0, p.unlockAt - game.completedCount)}</small></button>`;
+      }
+      return `<button class="ptab${id === flowProduct ? ' on' : ''}" data-pid="${id}">
+        <span class="sw" style="background:${p.color}"></span>${p.name}
+        <small>✓${game.completedByProduct[id]}</small></button>`;
+    }).join('');
+    prodTabs.querySelectorAll<HTMLButtonElement>('.ptab[data-pid]').forEach((b) =>
+      b.addEventListener('click', () => {
+        flowProduct = b.dataset.pid as ProductId;
+        flowSig = '';
+      }),
+    );
+
+    flowSteps.innerHTML = stepsOf(flowProduct)
+      .map(
+        (st, i) => `
+        <div class="step">
+          <span class="sw" style="background:${MACHINE_DEFS[st.kind].accent}"></span>
+          <span class="nm">${i + 1}. ${st.label}</span>
+          <span class="bar"><i></i></span>
+          <b class="cnt">0</b>
+        </div>`,
+      )
+      .join('');
+    stepCnt = [...flowSteps.querySelectorAll<HTMLElement>('.cnt')];
+    stepBar = [...flowSteps.querySelectorAll<HTMLElement>('.bar i')];
+  }
+
   const sparkNow = $('#sparkNow');
   const sparkCv = $('#sparkCv') as HTMLCanvasElement;
 
@@ -246,14 +287,12 @@ export function createUI(opts: UIOpts) {
     const max = Math.max(1, ...data);
     const px = (i: number) => (i / Math.max(1, data.length - 1)) * (W - 8) + 2;
     const py = (v: number) => H - 5 - (v / max) * (H - 12);
-    // ベースライン
     c.strokeStyle = '#e2e7ea';
     c.lineWidth = 1;
     c.beginPath();
     c.moveTo(2, H - 4.5);
     c.lineTo(W - 4, H - 4.5);
     c.stroke();
-    // 面 + ライン
     c.beginPath();
     data.forEach((v, i) => (i === 0 ? c.moveTo(px(i), py(v)) : c.lineTo(px(i), py(v))));
     c.strokeStyle = '#7761a7';
@@ -265,7 +304,6 @@ export function createUI(opts: UIOpts) {
     c.closePath();
     c.fillStyle = 'rgba(119, 97, 167, 0.12)';
     c.fill();
-    // 終端の強調
     c.beginPath();
     c.arc(px(data.length - 1), py(current), 3, 0, Math.PI * 2);
     c.fillStyle = '#7761a7';
@@ -275,6 +313,18 @@ export function createUI(opts: UIOpts) {
   // ---- コンテキストカード ----
   const card = $('#ctxcard');
   let cardSig = '';
+
+  function machineStatus(m: Game['machines'][number]): string {
+    if (m.broken && m.repairLeft > 0) return `修理中 残り${Math.ceil(m.repairLeft)}s`;
+    if (m.broken) return '故障 — 要修理';
+    if (m.maintLeft > 0) return `整備中 残り${Math.ceil(m.maintLeft)}s`;
+    if (m.busy.length > 0)
+      return m.kind === 'furnace' ? `処理中 (${m.busy.length}ロット)` : '処理中';
+    if (m.kind === 'furnace' && m.batch.length > 0)
+      return `装填中 ${m.batch.length}/${FURNACE_BATCH}`;
+    if (m.holdQueue.length > 0) return '出力待ち(ポート満杯)';
+    return '待機中';
+  }
 
   function refreshCard() {
     const m = vs.selected;
@@ -288,20 +338,15 @@ export function createUI(opts: UIOpts) {
     card.hidden = false;
 
     // 画面上の装置右肩に追従
-    const p = worldToScreen((m.col + def.w) * TILE, (m.row - 0.4) * TILE);
+    const p = worldToScreen((m.col + m.w) * TILE, (m.row - 0.4) * TILE);
     card.style.left = `${Math.min(window.innerWidth - 240, Math.max(8, p.x + 8))}px`;
-    card.style.top = `${Math.min(window.innerHeight - 220, Math.max(52, p.y))}px`;
+    card.style.top = `${Math.min(window.innerHeight - 260, Math.max(52, p.y))}px`;
 
-    const status =
-      m.broken && m.repairLeft > 0 ? `修理中 残り${Math.ceil(m.repairLeft)}s`
-      : m.broken ? '故障 — 要修理'
-      : m.maintLeft > 0 ? `整備中 残り${Math.ceil(m.maintLeft)}s`
-      : m.busyLot ? '処理中'
-      : m.holdLot ? '出力待ち(ポート満杯)'
-      : '待機中';
+    const status = machineStatus(m);
     const portDots = (io: 'in' | 'out') =>
       m.ports.filter((x) => x.io === io).map((x) => (x.foup ? '●' : '○')).join('');
-    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${m.noRoute}|${m.storage.length}|${m.broken}`;
+    const weights = PRODUCT_ORDER.map((id) => game.spawnWeights[id]).join(',');
+    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${m.noRoute}|${m.storage.length}|${m.broken}|${weights}|${game.unlocked.size}`;
     if (sig === cardSig) return;
     cardSig = sig;
 
@@ -309,18 +354,48 @@ export function createUI(opts: UIOpts) {
     card.innerHTML = `
       <div class="head"><span class="nm">${def.name}</span><span class="lbl">${m.label}</span></div>
       <div class="row"><span>状態</span><b>${status}</b></div>
-      <div class="row"><span>清浄度</span>
-        <span class="gauge"><i style="width:${m.cleanliness * 100}%;background:${
-          m.cleanliness > 0.6 ? '#3f9c5a' : m.cleanliness > 0.35 ? '#d99a2b' : '#cc4f44'
-        }"></i></span><b>${(m.cleanliness * 100).toFixed(0)}%</b></div>
+      ${def.placeable && m.kind !== 'stocker'
+        ? `<div class="row"><span>清浄度</span>
+          <span class="gauge"><i style="width:${m.cleanliness * 100}%;background:${
+            m.cleanliness > 0.6 ? '#3f9c5a' : m.cleanliness > 0.35 ? '#d99a2b' : '#cc4f44'
+          }"></i></span><b>${(m.cleanliness * 100).toFixed(0)}%</b></div>`
+        : ''}
       ${m.kind === 'stocker'
         ? `<div class="row"><span>保管数</span><b>${m.storage.length} / 6</b></div>`
-        : `<div class="row"><span>処理数</span><b>${m.jobs}</b></div>`}
+        : def.placeable
+          ? `<div class="row"><span>処理数</span><b>${m.jobs}</b></div>`
+          : ''}
       <div class="row"><span>ポート</span><b>IN ${portDots('in') || 'ー'}&nbsp; OUT ${portDots('out') || 'ー'}</b></div>
       ${m.noRoute ? '<div class="alert">次工程へのレール経路がありません</div>' : ''}
       ${m.broken && m.repairLeft === 0 ? '<div class="alert bad">故障しています。修理を開始してください</div>' : ''}
+      ${m.kind === 'load' ? '<div class="mix"><h3>投入比率</h3></div>' : ''}
       <div class="btns"></div>
     `;
+
+    // 投入ステーション: 製品ごとの投入比率エディタ
+    if (m.kind === 'load') {
+      const mix = card.querySelector('.mix')!;
+      for (const id of PRODUCT_ORDER) {
+        if (!game.unlocked.has(id)) continue;
+        const prod = PRODUCTS[id];
+        const row = document.createElement('div');
+        row.className = 'mixrow';
+        row.innerHTML = `
+          <span class="sw" style="background:${prod.color}"></span>
+          <span class="nm">${prod.name}</span>
+          <button class="mbtn" data-d="-1">−</button>
+          <b>${game.spawnWeights[id]}</b>
+          <button class="mbtn" data-d="1">+</button>`;
+        row.querySelectorAll<HTMLButtonElement>('.mbtn').forEach((b) =>
+          b.addEventListener('click', () => {
+            const d = Number(b.dataset.d);
+            game.spawnWeights[id] = Math.max(0, Math.min(9, game.spawnWeights[id] + d));
+          }),
+        );
+        mix.appendChild(row);
+      }
+    }
+
     const btns = card.querySelector('.btns')!;
     if (def.placeable) {
       if (m.broken) {
@@ -332,7 +407,7 @@ export function createUI(opts: UIOpts) {
       } else if (m.kind !== 'stocker') {
         const maint = document.createElement('button');
         maint.textContent = 'メンテナンス';
-        maint.disabled = m.busyLot !== null || m.maintLeft > 0;
+        maint.disabled = m.busy.length > 0 || m.batch.length > 0 || m.maintLeft > 0;
         maint.addEventListener('click', () => game.startMaintenance(m));
         btns.append(maint);
       }
@@ -365,13 +440,23 @@ export function createUI(opts: UIOpts) {
     ($('#stOht') as HTMLElement).title =
       `稼働 ${st.ohtTotal - st.ohtIdle} / 待機 ${st.ohtIdle} / 保有枠 ${st.ohtSize}`;
 
-    const maxWip = Math.max(1, ...st.stepWip);
-    st.stepWip.forEach((n, i) => {
-      stepCnt[i].textContent = String(n);
-      stepBar[i].style.width = `${(n / maxWip) * 100}%`;
-    });
-
     if (!flowPanel.classList.contains('hidden')) {
+      // タブ構成が変わったときだけDOMを作り直す
+      const sig =
+        `${flowProduct}|${[...game.unlocked].join(',')}|` +
+        PRODUCT_ORDER.map((id) => game.completedByProduct[id]).join(',');
+      if (sig !== flowSig) {
+        flowSig = sig;
+        rebuildFlow();
+      }
+      const wip = game.stepWipOf(flowProduct);
+      const maxWip = Math.max(1, ...wip);
+      wip.forEach((n, i) => {
+        if (stepCnt[i]) {
+          stepCnt[i].textContent = String(n);
+          stepBar[i].style.width = `${(n / maxWip) * 100}%`;
+        }
+      });
       sparkNow.textContent = `${st.throughput.toFixed(1)}/分`;
       drawSpark(st.throughput);
     }

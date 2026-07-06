@@ -137,6 +137,17 @@
       font-size: 10px; color: var(--dim); font-weight: 600;
       letter-spacing: 0.08em; margin-bottom: 7px;
     }
+    #prodTabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+    .ptab {
+      display: flex; align-items: center; gap: 4px;
+      border: 1px solid var(--line); background: var(--surface);
+      padding: 3px 7px; font-size: 11px; cursor: pointer;
+    }
+    .ptab .sw { width: 8px; height: 8px; }
+    .ptab small { color: var(--dim); font-size: 9.5px; }
+    .ptab:hover:not(:disabled) { border-color: var(--accent); }
+    .ptab.on { background: #efeaf7; border-color: var(--accent); }
+    .ptab.locked { opacity: 0.55; cursor: default; }
     #flow .step { display: flex; align-items: center; gap: 6px; padding: 2.5px 0; }
     #flow .sw { width: 8px; height: 8px; flex: none; }
     #flow .nm { font-size: 11.5px; }
@@ -184,6 +195,22 @@
     #ctxcard .alert.bad {
       color: #93392f; background: #faeae8; border-color: #e6b7b1;
     }
+    #ctxcard .mix { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+    #ctxcard .mix h3 {
+      font-size: 10px; color: var(--dim); font-weight: 600;
+      letter-spacing: 0.06em; margin-bottom: 4px;
+    }
+    #ctxcard .mixrow {
+      display: flex; align-items: center; gap: 6px; padding: 2.5px 0; font-size: 12px;
+    }
+    #ctxcard .mixrow .sw { width: 8px; height: 8px; flex: none; }
+    #ctxcard .mixrow .nm { flex: 1; }
+    #ctxcard .mixrow b { min-width: 14px; text-align: center; }
+    #ctxcard .mixrow .mbtn {
+      width: 20px; height: 20px; border: 1px solid var(--line);
+      background: var(--surface2); cursor: pointer; font-size: 13px; line-height: 1;
+    }
+    #ctxcard .mixrow .mbtn:hover { border-color: var(--accent); }
     #ctxcard .btns { display: flex; gap: 6px; margin-top: 10px; }
     #ctxcard .btns button {
       flex: 1; padding: 5px 0; font-size: 12px; cursor: pointer;

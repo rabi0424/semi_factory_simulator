@@ -10,6 +10,7 @@ export type MachineKind =
   | 'depo'    // 成膜
   | 'litho'   // 露光
   | 'etch'    // エッチング
+  | 'furnace' // 拡散炉(バッチ処理: 酸化/アニール)
   | 'inspect' // 検査
   | 'stocker' // ストッカー(FOUP自動倉庫)
   | 'ship';   // 出荷ステーション
@@ -67,6 +68,12 @@ export const MACHINE_DEFS: Record<MachineKind, MachineDef> = {
     desc: 'パターンに沿って膜を削る',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 1, dy: 1, io: 'out' }],
   },
+  furnace: {
+    name: '拡散炉', short: 'FUR', accent: '#b3574d',
+    w: 3, h: 2, procTime: 12, baseDefect: 0.008, wear: 0.05, placeable: true,
+    desc: 'バッチ炉。最大3ロットを同時に酸化/アニール処理。満載で焼くほど効率的だが、待ちすぎるとフローが淀む',
+    ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 2, dy: 1, io: 'out' }],
+  },
   inspect: {
     name: '検査装置', short: 'INS', accent: '#6aa86e',
     w: 2, h: 1, procTime: 2, baseDefect: 0, wear: 0.01, placeable: true,
@@ -87,23 +94,96 @@ export const MACHINE_DEFS: Record<MachineKind, MachineDef> = {
   },
 };
 
-// ---- 工程レシピ(リエントラント: 成膜・露光・エッチングを2周) ----
+// ---- 製品と工程レシピ ----
 export interface RecipeStep {
   kind: MachineKind;
   label: string;
 }
 
-export const RECIPE: RecipeStep[] = [
-  { kind: 'clean',   label: '初期洗浄' },
-  { kind: 'depo',    label: '成膜 ①' },
-  { kind: 'litho',   label: '露光 ①' },
-  { kind: 'etch',    label: 'エッチング ①' },
-  { kind: 'depo',    label: '成膜 ②' },
-  { kind: 'litho',   label: '露光 ②' },
-  { kind: 'etch',    label: 'エッチング ②' },
-  { kind: 'clean',   label: '最終洗浄' },
-  { kind: 'inspect', label: '検査' },
-];
+export type ProductId = 'diode' | 'logic' | 'dram' | 'cpu';
+
+export interface Product {
+  id: ProductId;
+  name: string;
+  color: string;    // FOUPタグ・UIの識別色(固定順の categorical)
+  unlockAt: number; // 累計完成ロット数で解禁
+  steps: RecipeStep[];
+}
+
+const s = (kind: MachineKind, label: string): RecipeStep => ({ kind, label });
+
+export const PRODUCTS: Record<ProductId, Product> = {
+  diode: {
+    id: 'diode', name: 'ダイオード', color: '#3f8f7a', unlockAt: 0,
+    steps: [
+      s('clean', '洗浄'),
+      s('furnace', '酸化'),
+      s('litho', '露光'),
+      s('etch', 'エッチング'),
+      s('inspect', '検査'),
+    ],
+  },
+  logic: {
+    id: 'logic', name: 'ロジックIC', color: '#4a7dbb', unlockAt: 6,
+    steps: [
+      s('clean', '初期洗浄'),
+      s('depo', '成膜 ①'),
+      s('litho', '露光 ①'),
+      s('etch', 'エッチング ①'),
+      s('depo', '成膜 ②'),
+      s('litho', '露光 ②'),
+      s('etch', 'エッチング ②'),
+      s('clean', '最終洗浄'),
+      s('inspect', '検査'),
+    ],
+  },
+  dram: {
+    id: 'dram', name: 'DRAM', color: '#b05fa3', unlockAt: 30,
+    steps: [
+      s('clean', '初期洗浄'),
+      s('furnace', '酸化'),
+      s('depo', '成膜 ①'),
+      s('litho', '露光 ①'),
+      s('etch', 'エッチング ①'),
+      s('depo', '成膜 ②'),
+      s('litho', '露光 ②'),
+      s('etch', 'エッチング ②'),
+      s('furnace', 'アニール'),
+      s('depo', '成膜 ③'),
+      s('litho', '露光 ③'),
+      s('etch', 'エッチング ③'),
+      s('inspect', '検査'),
+    ],
+  },
+  cpu: {
+    id: 'cpu', name: 'CPU', color: '#c26b3d', unlockAt: 70,
+    steps: [
+      s('clean', '初期洗浄'),
+      s('furnace', '酸化'),
+      s('depo', '成膜 ①'),
+      s('litho', '露光 ①'),
+      s('etch', 'エッチング ①'),
+      s('depo', '成膜 ②'),
+      s('litho', '露光 ②'),
+      s('etch', 'エッチング ②'),
+      s('clean', '中間洗浄'),
+      s('furnace', 'アニール'),
+      s('depo', '成膜 ③'),
+      s('litho', '露光 ③'),
+      s('etch', 'エッチング ③'),
+      s('depo', '成膜 ④'),
+      s('litho', '露光 ④'),
+      s('etch', 'エッチング ④'),
+      s('inspect', '検査'),
+    ],
+  },
+};
+
+export const PRODUCT_ORDER: ProductId[] = ['diode', 'logic', 'dram', 'cpu'];
+
+export function stepsOf(product: ProductId): RecipeStep[] {
+  return PRODUCTS[product].steps;
+}
 
 // ---- 回転 ----
 // rot = 時計回り90°の回数。ポート面: 0=南, 1=西, 2=北, 3=東
@@ -138,6 +218,8 @@ export const MIN_CLEANLINESS = 0.2;
 export const SCRAP_THRESHOLD = 0.4;   // 検査でこれ未満は廃棄
 export const DEFAULT_SPAWN_INTERVAL = 10;
 export const STOCKER_CAP = 6;         // ストッカーの内部保管数
+export const FURNACE_BATCH = 3;       // 拡散炉の同時処理ロット数
+export const FURNACE_WAIT = 10;       // 満載を待つ最大時間 [秒](超えたら装填分だけで処理開始)
 
 // ---- 故障 ----
 // 1ジョブ完了ごとに故障判定。汚れているほど壊れやすい
@@ -147,7 +229,7 @@ export const REPAIR_TIME = 25;        // 修理所要 [秒](メンテの約3倍)
 
 // ---- セーブ ----
 export const SAVE_KEY = 'semifab.save.v1';
-export const SAVE_VERSION = 1;
+export const SAVE_VERSION = 2;
 export const AUTOSAVE_INTERVAL = 10;  // [実秒]
 
 // ---- OHT(天井搬送) ----
