@@ -225,12 +225,38 @@ export function createUI(opts: UIOpts) {
       if (ok) afterLoad();
     });
   });
-  $('#newBtn').addEventListener('click', () => {
-    if (!window.confirm('工場を初期状態に戻します。よろしいですか?')) return;
+  // window.confirm はサンドボックス化された環境(Artifact埋め込み等)では
+  // モーダル表示が抑制され常にfalseを返すため使わず、ボタン自体を2段階の
+  // 確認に切り替える(押す→ラベルが変わる→もう一度押すと実行)
+  const newBtn = $('#newBtn') as HTMLButtonElement;
+  const newBtnLabel = '新規工場';
+  const newBtnConfirmLabel = 'もう一度押すと初期化';
+  let armed = false;
+  let armTimer = 0;
+  const disarm = () => {
+    armed = false;
+    newBtn.textContent = newBtnLabel;
+    newBtn.classList.remove('confirming');
+  };
+  newBtn.addEventListener('click', () => {
+    if (!armed) {
+      armed = true;
+      newBtn.textContent = newBtnConfirmLabel;
+      newBtn.classList.add('confirming');
+      clearTimeout(armTimer);
+      armTimer = window.setTimeout(disarm, 4000);
+      return;
+    }
+    clearTimeout(armTimer);
+    disarm();
     game.reset();
     clearLocal();
     game.onMessage('新規工場を開始しました');
     afterLoad();
+  });
+  // メニューを閉じたら確認状態もリセット
+  document.addEventListener('mousedown', (e) => {
+    if (armed && !(e.target as HTMLElement).closest('.menuwrap')) disarm();
   });
 
   // ---- 製品タブ + 工程フロー ----
