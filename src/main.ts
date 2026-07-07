@@ -41,13 +41,23 @@ const ui = createUI({
   game,
   vs,
   worldToScreen: (x, z) => sceneCtx.worldToScreen(x, 1.8, z),
+  getMode: () => sceneCtx.mode,
+  toggleMode: () => setViewMode(sceneCtx.mode === '3d' ? '2d' : '3d'),
 });
+
+function setViewMode(mode: '2d' | '3d') {
+  sceneCtx.setMode(mode);
+  game.onMessage(mode === '2d' ? '2Dモード(真上固定)に切替' : '3Dモードに切替');
+}
 
 const view3d = new View3D(sceneCtx.scene);
 
-// ---- 入力(Pointer Events: 左=ツール, 右=回転, 中=パン, ホイール=ズーム) ----
+// ---- 入力(Pointer Events: 左=ツール, 右クリック=装置回転/右ドラッグ=視点回転(3D),
+// 中=パン, ホイール=ズーム) ----
 let railDragging = false;
 let railErasing = false;
+let rightDown: { x: number; y: number } | null = null;
+const RIGHT_CLICK_DRAG_TOLERANCE = 6; // px。これ未満の移動は「クリック」とみなす
 
 function updateCursor(clientX: number, clientY: number) {
   const t = sceneCtx.pickTile(clientX, clientY);
@@ -86,7 +96,12 @@ function commitRailPath() {
 
 canvas.addEventListener('pointerdown', (e) => {
   updateCursor(e.clientX, e.clientY);
-  if (e.button !== 0) return; // 右・中ボタンはカメラ操作(OrbitControls)
+  if (e.button === 2) {
+    // ドラッグか単クリックかは pointerup 側で判定する
+    rightDown = { x: e.clientX, y: e.clientY };
+    return;
+  }
+  if (e.button !== 0) return; // 中ボタンはカメラのパン(OrbitControls)
   if (!vs.cursor.inside) {
     if (vs.tool.mode === 'select') vs.selected = null;
     return;
@@ -131,7 +146,16 @@ window.addEventListener('pointermove', (e) => {
   }
 });
 
-window.addEventListener('pointerup', () => {
+window.addEventListener('pointerup', (e) => {
+  if (e.button === 2 && rightDown) {
+    const dist = Math.hypot(e.clientX - rightDown.x, e.clientY - rightDown.y);
+    rightDown = null;
+    // ドラッグでなければ(視点回転ではなく)単なる右クリック
+    // → 設置ツール中は装置の向きを時計回りに回転
+    if (dist < RIGHT_CLICK_DRAG_TOLERANCE && vs.tool.mode === 'place') {
+      vs.toolRot = (vs.toolRot + 1) % 4;
+    }
+  }
   if (railDragging) commitRailPath();
   railDragging = false;
   railErasing = false;
@@ -141,6 +165,11 @@ canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 window.addEventListener('keydown', (e) => {
   if ((e.target as HTMLElement)?.tagName === 'INPUT') return;
+  if (e.key === 'Shift') {
+    if (e.repeat) return; // 押しっぱなしでの誤連続切替を防ぐ
+    setViewMode(sceneCtx.mode === '3d' ? '2d' : '3d');
+    return;
+  }
   if (e.key === 'Escape') {
     ui.setTool({ mode: 'select', kind: null });
     vs.selected = null;
@@ -220,14 +249,18 @@ declare global {
       worldToScreen: (px: number, py: number) => { x: number; y: number };
       addRail: (tiles: [number, number][]) => void;
       scene?: unknown; // デバッグ用
-      camera?: unknown;
+      camera?: unknown; // デバッグ用(常に現在アクティブなカメラを指す)
+      mode?: '2d' | '3d';
+      setMode?: (mode: '2d' | '3d') => void;
     };
   }
 }
 window.__sim = {
   game, vs, TILE,
   scene: sceneCtx.scene,
-  camera: sceneCtx.camera,
+  get camera() { return sceneCtx.camera; },
+  get mode() { return sceneCtx.mode; },
+  setMode: setViewMode,
   worldToScreen: (px, py) => sceneCtx.worldToScreen(px / TILE, 0, py / TILE),
   addRail: (tiles) => {
     for (let i = 1; i < tiles.length; i++) {
