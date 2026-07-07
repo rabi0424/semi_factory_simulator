@@ -59,7 +59,7 @@ export const MACHINE_DEFS: Record<MachineKind, MachineDef> = {
   litho: {
     name: '露光装置', short: 'LITHO', accent: '#c7a13f',
     w: 3, h: 2, procTime: 4, baseDefect: 0.025, wear: 0.03, placeable: true,
-    desc: '回路パターンを転写する。工場最大の装置で、レシピ中2回通る要衝',
+    desc: '回路パターンを転写する。工場最大の装置。多くの製品が複数回通り、ボトルネックになりやすい要衝',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 2, dy: 1, io: 'out' }],
   },
   etch: {
@@ -181,8 +181,43 @@ export const PRODUCTS: Record<ProductId, Product> = {
 
 export const PRODUCT_ORDER: ProductId[] = ['diode', 'logic', 'dram', 'cpu'];
 
-export function stepsOf(product: ProductId): RecipeStep[] {
-  return PRODUCTS[product].steps;
+// ---- プロセスノード(微細化)----
+// 同じ製品でも量産を重ねると世代が進み、微細化する。世代が1つ上がるごとに
+// 配線層が1層増える(=成膜→露光→エッチングの1サイクルが最終検査の直前に
+// 挿入される)。工程が伸びるほど欠陥が積み増され、歩留まり維持が難しくなる。
+export const PROCESS_NODES = ['250nm', '180nm', '130nm', '90nm', '65nm', '45nm'];
+export const MAX_GEN = PROCESS_NODES.length - 1;
+export const GEN_STEP = 20; // この数だけ量産するごとに1世代進む
+
+export function nodeLabel(gen: number): string {
+  return PROCESS_NODES[Math.max(0, Math.min(gen, MAX_GEN))];
+}
+
+// 累計完成数から到達世代を求める
+export function genFromCompleted(completed: number): number {
+  return Math.min(MAX_GEN, Math.floor(completed / GEN_STEP));
+}
+
+// 世代を織り込んだ工程レシピ。gen=0 は基本レシピそのもの。
+// 世代ぶんの追加配線層(depo→litho→etch)を最終工程の直前へ挿入する。
+export function stepsForGen(product: ProductId, gen: number): RecipeStep[] {
+  const base = PRODUCTS[product].steps;
+  const g = Math.max(0, Math.min(gen, MAX_GEN));
+  if (g === 0) return base;
+  const extra: RecipeStep[] = [];
+  for (let i = 1; i <= g; i++) {
+    extra.push(
+      s('depo', `成膜 (微細化層${i})`),
+      s('litho', `露光 (微細化層${i})`),
+      s('etch', `エッチング (微細化層${i})`),
+    );
+  }
+  return [...base.slice(0, -1), ...extra, base[base.length - 1]];
+}
+
+// gen を明示しない呼び出しは基本レシピ(gen=0)として扱う
+export function stepsOf(product: ProductId, gen = 0): RecipeStep[] {
+  return stepsForGen(product, gen);
 }
 
 // ---- 回転 ----
@@ -229,7 +264,7 @@ export const REPAIR_TIME = 25;        // 修理所要 [秒](メンテの約3倍)
 
 // ---- セーブ ----
 export const SAVE_KEY = 'semifab.save.v1';
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 export const AUTOSAVE_INTERVAL = 10;  // [実秒]
 
 // ---- OHT(天井搬送) ----
