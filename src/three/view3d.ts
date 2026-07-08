@@ -393,6 +393,8 @@ export class View3D {
   private ghost: THREE.Group | null = null;
   private ghostKey = '';
   private ghostBody: THREE.Mesh | null = null;
+  private hlMeshes = new Map<number, THREE.Mesh>(); // 装置種ハイライトの床リング
+  private hlGroup = new THREE.Group();
   private previewPool: THREE.Mesh[] = [];
   private previewGroup = new THREE.Group();
   private eraseRing: THREE.Mesh;
@@ -403,6 +405,7 @@ export class View3D {
     scene.add(this.railGroup);
     scene.add(this.heatGroup);
     scene.add(this.previewGroup);
+    scene.add(this.hlGroup);
 
     this.eraseRing = new THREE.Mesh(GEO.torus, MAT.erase);
     this.eraseRing.rotation.x = Math.PI / 2;
@@ -473,11 +476,11 @@ export class View3D {
       } else {
         setLight(
           view.lights[0], LIGHT_COLORS.red,
-          m.broken ? (m.repairLeft > 0 || blink) : m.maintLeft > 0 || m.holdQueue.length > 0,
+          m.broken ? (m.repairLeft > 0 || blink) : m.holdQueue.length > 0,
         );
         setLight(
           view.lights[1], LIGHT_COLORS.amber,
-          !m.broken && m.maintLeft === 0 && m.busy.length === 0 && m.holdQueue.length === 0,
+          !m.broken && m.busy.length === 0 && m.holdQueue.length === 0,
         );
         setLight(view.lights[2], LIGHT_COLORS.green, m.busy.length > 0);
       }
@@ -743,11 +746,51 @@ export class View3D {
       const def = MACHINE_DEFS[vs.tool.kind!];
       const { w, h } = rotSize(def, vs.toolRot);
       this.ghost.position.set(vs.cursor.c + w / 2, 0, vs.cursor.r + h / 2);
-      const ok = game.canPlace(vs.tool.kind!, vs.cursor.c, vs.cursor.r, vs.toolRot);
+      const ok =
+        game.canPlace(vs.tool.kind!, vs.cursor.c, vs.cursor.r, vs.toolRot) &&
+        game.canAfford(vs.tool.kind!);
       this.ghostBody!.material = ok ? MAT.ghostOk : MAT.ghostNg;
       this.ghost.visible = true;
     } else if (this.ghost) {
       this.ghost.visible = false;
+    }
+
+    // 装置種ハイライト(工程フローパネル⇔フロア連動): 該当装置の足元に
+    // パルスするリングを表示し、どの装置群の話かをフロア上で示す
+    const hk = vs.highlightKind;
+    this.hlGroup.visible = !!hk;
+    if (hk) {
+      const pulse = 0.5 + 0.5 * Math.sin(vs.time * 4);
+      const seen = new Set<number>();
+      for (const m of game.machines) {
+        if (m.kind !== hk) continue;
+        seen.add(m.id);
+        let ring = this.hlMeshes.get(m.id);
+        if (!ring) {
+          ring = new THREE.Mesh(
+            GEO.torus,
+            new THREE.MeshBasicMaterial({
+              color: MACHINE_DEFS[hk].accent, transparent: true,
+              depthWrite: false,
+            }),
+          );
+          ring.rotation.x = Math.PI / 2;
+          this.hlMeshes.set(m.id, ring);
+          this.hlGroup.add(ring);
+        }
+        (ring.material as THREE.MeshBasicMaterial).color.set(MACHINE_DEFS[hk].accent);
+        (ring.material as THREE.MeshBasicMaterial).opacity = 0.55 + 0.35 * pulse;
+        const radius = Math.max(m.w, m.h) + 0.5 + 0.12 * pulse;
+        ring.scale.set(radius, radius, 1);
+        ring.position.set(m.col + m.w / 2, 0.05, m.row + m.h / 2);
+      }
+      for (const [id, ring] of this.hlMeshes) {
+        if (!seen.has(id)) {
+          this.hlGroup.remove(ring);
+          (ring.material as THREE.Material).dispose();
+          this.hlMeshes.delete(id);
+        }
+      }
     }
 
     // レール敷設プレビュー
@@ -800,9 +843,6 @@ function plateStatus(m: Machine): { text: string; color: string } {
     return { text: `修理中 ${Math.ceil(m.repairLeft)}s`, color: '#cc4f44' };
   }
   if (m.broken) return { text: '故障', color: '#cc4f44' };
-  if (m.maintLeft > 0) {
-    return { text: `整備中 ${Math.ceil(m.maintLeft)}s`, color: '#b07f19' };
-  }
   if (m.kind === 'stocker') {
     return { text: `保管 ${m.storage.length}/6`, color: '#5d6d76' };
   }

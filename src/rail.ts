@@ -36,19 +36,32 @@ export class RailNetwork {
     return (this.out.get(k)?.size ?? 0) > 0 || (this.inc.get(k)?.size ?? 0) > 0;
   }
 
-  // タイルに接続する全エッジを撤去
-  removeTile(k: TileKey) {
-    for (const b of this.out.get(k) ?? []) this.inc.get(b)?.delete(k);
+  // タイルに接続する全エッジを撤去。撤去したエッジ数を返す(払い戻し用)
+  removeTile(k: TileKey): number {
+    let removed = 0;
+    for (const b of this.out.get(k) ?? []) {
+      this.inc.get(b)?.delete(k);
+      removed++;
+    }
     this.out.delete(k);
-    for (const a of this.inc.get(k) ?? []) this.out.get(a)?.delete(k);
+    for (const a of this.inc.get(k) ?? []) {
+      this.out.get(a)?.delete(k);
+      removed++;
+    }
     this.inc.delete(k);
-    this.version++;
+    if (removed > 0) this.version++;
+    return removed;
   }
 
-  // BFS 最短経路(タイル列、from を含む)。到達不能なら null
-  path(from: TileKey, to: TileKey): TileKey[] | null {
+  // 最短経路(タイル列、from を含む)。到達不能なら null。
+  // cost を渡すとタイルへの進入コスト(>=1)を織り込んだ最小コスト経路になる
+  // (渋滞回避ルーティング用)。省略時は純粋なホップ数最短(BFS)
+  path(
+    from: TileKey, to: TileKey, cost?: (k: TileKey) => number,
+  ): TileKey[] | null {
     if (from === to) return [from];
     if (!this.hasNode(from) || !this.hasNode(to)) return null;
+    if (cost) return this.dijkstra(from, to, cost);
     const prev = new Map<TileKey, TileKey>();
     const queue: TileKey[] = [from];
     prev.set(from, from);
@@ -70,6 +83,42 @@ export class RailNetwork {
       }
     }
     return null;
+  }
+
+  // コスト付き最短経路。ノード数は高々マップタイル数なので線形走査で十分
+  private dijkstra(
+    from: TileKey, to: TileKey, cost: (k: TileKey) => number,
+  ): TileKey[] | null {
+    const dist = new Map<TileKey, number>([[from, 0]]);
+    const prev = new Map<TileKey, TileKey>();
+    const done = new Set<TileKey>();
+    for (;;) {
+      let cur: TileKey | null = null;
+      let curDist = Infinity;
+      for (const [k, d] of dist) {
+        if (!done.has(k) && d < curDist) {
+          cur = k;
+          curDist = d;
+        }
+      }
+      if (cur === null) return null; // 到達不能
+      if (cur === to) break;
+      done.add(cur);
+      for (const next of this.out.get(cur) ?? []) {
+        const nd = curDist + Math.max(1, cost(next));
+        if (nd < (dist.get(next) ?? Infinity)) {
+          dist.set(next, nd);
+          prev.set(next, cur);
+        }
+      }
+    }
+    const result: TileKey[] = [to];
+    let node = to;
+    while (node !== from) {
+      node = prev.get(node)!;
+      result.push(node);
+    }
+    return result.reverse();
   }
 
   // from から到達可能な全ノード(ディスパッチの行き先フィルタ用)

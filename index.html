@@ -53,6 +53,8 @@
     }
     .stat label { font-size: 10px; color: var(--dim); letter-spacing: 0.04em; }
     .stat b { font-size: 13px; }
+    .stat.money { border-left: none; padding-left: 0; }
+    .stat.money b { color: var(--accent); font-weight: 700; }
     .stat b i { font-style: normal; font-size: 10px; color: var(--dim); }
     .stat.oht button {
       width: 20px; height: 20px; border: 1px solid var(--line); background: var(--surface2);
@@ -111,7 +113,7 @@
     }
     #hotbar .tool {
       position: relative;
-      width: 62px; height: 58px;
+      width: 62px; height: 66px;
       border: 1px solid var(--line); background: var(--surface);
       cursor: pointer;
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
@@ -126,6 +128,10 @@
       font-style: normal; font-size: 9px; color: var(--dim);
     }
     #hotbar .tool span { font-size: 9.5px; color: var(--ink); letter-spacing: 0.02em; }
+    #hotbar .tool em {
+      font-style: normal; font-size: 8.5px; color: var(--dim);
+      font-variant-numeric: tabular-nums;
+    }
 
     /* ---- 工程フローパネル ---- */
     #flow {
@@ -163,15 +169,27 @@
       margin-top: 6px; font-size: 10px; color: var(--dim);
       border-top: 1px dashed var(--line); padding-top: 5px;
     }
-    #flow .step { display: flex; align-items: center; gap: 6px; padding: 2.5px 0; }
+    #flow .step {
+      display: flex; align-items: center; gap: 6px; padding: 2.5px 3px;
+      margin: 0 -3px; cursor: pointer; border: 1px solid transparent;
+    }
+    #flow .step:hover { border-color: var(--line); }
+    #flow .step.hl { background: #efeaf7; border-color: var(--accent); }
     #flow .sw { width: 8px; height: 8px; flex: none; }
-    #flow .nm { font-size: 11.5px; }
+    #flow .nm { font-size: 11.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #flow .util {
+      font-size: 10px; min-width: 28px; text-align: right; flex: none;
+      color: var(--dim); font-variant-numeric: tabular-nums;
+    }
     #flow .bar {
-      margin-left: auto; width: 52px; height: 5px; background: var(--surface2);
+      width: 36px; height: 5px; background: var(--surface2);
       overflow: hidden; flex: none;
     }
     #flow .bar i { display: block; height: 100%; background: var(--accent); }
-    #flow .cnt { font-size: 11.5px; min-width: 16px; text-align: right; }
+    #flow .cnt { font-size: 11.5px; min-width: 16px; text-align: right; flex: none; }
+    #flow .legend {
+      margin-top: 5px; font-size: 9px; color: var(--dim); letter-spacing: 0.02em;
+    }
     #flow .spark { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px; }
     #flow .spark h2 { display: flex; justify-content: space-between; align-items: baseline; }
     #flow .spark h2 b { font-size: 12px; color: var(--ink); }

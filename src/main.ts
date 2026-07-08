@@ -23,6 +23,7 @@ const vs: ViewState = {
   toolRot: 0,
   railPath: [],
   selected: null,
+  highlightKind: null,
   showHeat: false,
   time: 0,
 };
@@ -89,8 +90,7 @@ function extendRailPath(c: number, r: number) {
 }
 
 function commitRailPath() {
-  const path = vs.railPath;
-  for (let i = 1; i < path.length; i++) game.rail.addEdge(path[i - 1], path[i]);
+  game.buyRailPath(vs.railPath); // 資金不足なら1区間も敷かれない(トースト通知)
   vs.railPath = [];
 }
 
@@ -173,6 +173,7 @@ window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     ui.setTool({ mode: 'select', kind: null });
     vs.selected = null;
+    vs.highlightKind = null;
     return;
   }
   if (e.key === 'f' || e.key === 'F') {
