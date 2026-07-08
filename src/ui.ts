@@ -3,10 +3,11 @@
 
 import {
   MACHINE_DEFS, MAX_FLEET, PRODUCTS, PRODUCT_ORDER, stepsOf,
-  FURNACE_BATCH,
+  FURNACE_BATCH, nodeLabel,
 } from './config';
 import type { MachineKind, ProductId } from './config';
 import { Game } from './sim';
+import type { StallInfo } from './sim';
 import type { ViewState, Tool } from './view';
 import { saveToLocal, clearLocal, exportFile, importFile } from './save';
 
@@ -290,7 +291,7 @@ export function createUI(opts: UIOpts) {
       }
       return `<button class="ptab${id === flowProduct ? ' on' : ''}" data-pid="${id}">
         <span class="sw" style="background:${p.color}"></span>${p.name}
-        <small>✓${game.completedByProduct[id]}</small></button>`;
+        <small>${nodeLabel(game.productGen[id])} ✓${game.completedByProduct[id]}</small></button>`;
     }).join('');
     prodTabs.querySelectorAll<HTMLButtonElement>('.ptab[data-pid]').forEach((b) =>
       b.addEventListener('click', () => {
@@ -299,17 +300,25 @@ export function createUI(opts: UIOpts) {
       }),
     );
 
-    flowSteps.innerHTML = stepsOf(flowProduct)
-      .map(
-        (st, i) => `
+    const gen = game.productGen[flowProduct];
+    const steps = stepsOf(flowProduct, gen);
+    const otherGen = game.otherGenWipOf(flowProduct, gen);
+    flowSteps.innerHTML =
+      `<div class="node">プロセスノード <b>${nodeLabel(gen)}</b><small>${steps.length}工程</small></div>` +
+      steps
+        .map(
+          (st, i) => `
         <div class="step">
           <span class="sw" style="background:${MACHINE_DEFS[st.kind].accent}"></span>
           <span class="nm">${i + 1}. ${st.label}</span>
           <span class="bar"><i></i></span>
           <b class="cnt">0</b>
         </div>`,
-      )
-      .join('');
+        )
+        .join('') +
+      (otherGen > 0
+        ? `<div class="othergen">前世代のロットが ${otherGen} 流れています(旧レシピで完了)</div>`
+        : '');
     stepCnt = [...flowSteps.querySelectorAll<HTMLElement>('.cnt')];
     stepBar = [...flowSteps.querySelectorAll<HTMLElement>('.bar i')];
   }
@@ -386,7 +395,8 @@ export function createUI(opts: UIOpts) {
     const portDots = (io: 'in' | 'out') =>
       m.ports.filter((x) => x.io === io).map((x) => (x.foup ? '●' : '○')).join('');
     const weights = PRODUCT_ORDER.map((id) => game.spawnWeights[id]).join(',');
-    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${m.noRoute}|${m.storage.length}|${m.broken}|${weights}|${game.unlocked.size}`;
+    const stallSig = m.stall ? `${m.stall.reason}:${m.stall.kind}` : '';
+    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${stallSig}|${m.storage.length}|${m.broken}|${weights}|${game.unlocked.size}`;
     if (sig === cardSig) return;
     cardSig = sig;
 
@@ -406,7 +416,7 @@ export function createUI(opts: UIOpts) {
           ? `<div class="row"><span>処理数</span><b>${m.jobs}</b></div>`
           : ''}
       <div class="row"><span>ポート</span><b>IN ${portDots('in') || 'ー'}&nbsp; OUT ${portDots('out') || 'ー'}</b></div>
-      ${m.noRoute ? '<div class="alert">次工程へのレール経路がありません</div>' : ''}
+      ${m.stall ? `<div class="alert">${stallMessage(m.stall)}</div>` : ''}
       ${m.broken && m.repairLeft === 0 ? '<div class="alert bad">故障しています。修理を開始してください</div>' : ''}
       ${m.kind === 'load' ? '<div class="mix"><h3>投入比率</h3></div>' : ''}
       <div class="btns"></div>
@@ -481,15 +491,17 @@ export function createUI(opts: UIOpts) {
       `稼働 ${st.ohtTotal - st.ohtIdle} / 待機 ${st.ohtIdle} / 保有枠 ${st.ohtSize}`;
 
     if (!flowPanel.classList.contains('hidden')) {
-      // タブ構成が変わったときだけDOMを作り直す
+      // タブ構成・世代・前世代残存数が変わったときだけDOMを作り直す
+      const gen = game.productGen[flowProduct];
       const sig =
-        `${flowProduct}|${[...game.unlocked].join(',')}|` +
+        `${flowProduct}|${gen}|${game.otherGenWipOf(flowProduct, gen)}|` +
+        `${[...game.unlocked].join(',')}|` +
         PRODUCT_ORDER.map((id) => game.completedByProduct[id]).join(',');
       if (sig !== flowSig) {
         flowSig = sig;
         rebuildFlow();
       }
-      const wip = game.stepWipOf(flowProduct);
+      const wip = game.stepWipOf(flowProduct, gen);
       const maxWip = Math.max(1, ...wip);
       wip.forEach((n, i) => {
         if (stepCnt[i]) {
@@ -506,6 +518,14 @@ export function createUI(opts: UIOpts) {
   }
 
   return { refresh, syncTool, selectToolByKey, toggleFlow, toggleHeat, setTool };
+}
+
+// 出力FOUPの滞留理由を、プレイヤー向けの一文にする
+function stallMessage(st: StallInfo): string {
+  const name = MACHINE_DEFS[st.kind].name;
+  if (st.reason === 'missing') return `次工程の装置「${name}」が未設置です`;
+  if (st.reason === 'down') return `次工程の装置「${name}」が全て停止中です`;
+  return `${name}へのレール経路がありません`;
 }
 
 // ---- ホットバーのアイコン(Canvas描画) ----
