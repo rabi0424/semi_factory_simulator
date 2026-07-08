@@ -4,7 +4,7 @@
 
 import * as THREE from 'three';
 import {
-  TILE, MACHINE_DEFS, PRODUCTS, FURNACE_BATCH,
+  TILE, CEIL_Y, MACHINE_DEFS, PRODUCTS, FURNACE_BATCH,
   rotSize, rotPorts, servesOf,
 } from '../config';
 import type { MachineKind } from '../config';
@@ -45,20 +45,44 @@ const GEO = {
   torus: new THREE.TorusGeometry(0.42, 0.05, 8, 28),
 };
 
+// 塗装板金のムラ(ラフネスマップ)。均一なマテリアルのCG臭さを消す
+const bodyRoughTex = (() => {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 256;
+  const g = cv.getContext('2d')!;
+  g.fillStyle = 'rgb(120,120,120)';
+  g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2600; i++) {
+    const v = 120 + (Math.random() - 0.5) * 52;
+    g.fillStyle = `rgba(${v},${v},${v},0.5)`;
+    g.fillRect(Math.random() * 256, Math.random() * 256, 2 + Math.random() * 6, 2);
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+})();
+
 const MAT = {
-  body: new THREE.MeshStandardMaterial({ color: '#fafbfd', roughness: 0.6, metalness: 0.04 }),
-  plinth: new THREE.MeshStandardMaterial({ color: '#ccd3d8', roughness: 0.85 }),
-  dock: new THREE.MeshStandardMaterial({ color: '#c2cad0', roughness: 0.7 }),
-  tube: new THREE.MeshStandardMaterial({ color: '#e8e2df', roughness: 0.4, metalness: 0.25 }),
-  railBeam: new THREE.MeshStandardMaterial({ color: '#9aa5ad', roughness: 0.45, metalness: 0.5 }),
-  railTop: new THREE.MeshStandardMaterial({ color: '#eef1f3', roughness: 0.35, metalness: 0.2 }),
-  hanger: new THREE.MeshStandardMaterial({ color: '#7d8892', roughness: 0.6, metalness: 0.4 }),
+  body: new THREE.MeshPhysicalMaterial({
+    color: '#f2f3f4', roughness: 0.42, roughnessMap: bodyRoughTex, metalness: 0.06,
+    clearcoat: 0.25, clearcoatRoughness: 0.5,
+  }),
+  plinth: new THREE.MeshStandardMaterial({ color: '#565d63', roughness: 0.55, metalness: 0.3 }),
+  dock: new THREE.MeshStandardMaterial({ color: '#c2cad0', roughness: 0.5, metalness: 0.4 }),
+  tube: new THREE.MeshStandardMaterial({ color: '#dfe4e8', roughness: 0.28, metalness: 0.9 }),
+  railBeam: new THREE.MeshStandardMaterial({ color: '#9aa5ad', roughness: 0.35, metalness: 0.8 }),
+  railTop: new THREE.MeshStandardMaterial({ color: '#eef1f3', roughness: 0.3, metalness: 0.4 }),
+  hanger: new THREE.MeshStandardMaterial({ color: '#7d8892', roughness: 0.5, metalness: 0.7 }),
   chevron: new THREE.MeshStandardMaterial({ color: '#88949c', roughness: 0.55 }),
-  vehicle: new THREE.MeshStandardMaterial({ color: '#f7f9fa', roughness: 0.4, metalness: 0.15 }),
+  vehicle: new THREE.MeshPhysicalMaterial({
+    color: '#f4f6f7', roughness: 0.35, metalness: 0.1,
+    clearcoat: 0.4, clearcoatRoughness: 0.35,
+  }),
   cable: new THREE.MeshStandardMaterial({ color: '#8b969e', roughness: 0.7 }),
-  foupBody: new THREE.MeshStandardMaterial({
-    color: '#8d6fb5', roughness: 0.3, metalness: 0.05,
-    transparent: true, opacity: 0.88,
+  foupBody: new THREE.MeshPhysicalMaterial({
+    color: '#a48ec7', roughness: 0.15, metalness: 0,
+    transparent: true, opacity: 0.62,
+    clearcoat: 1, clearcoatRoughness: 0.12,
   }),
   foupLid: new THREE.MeshStandardMaterial({ color: '#d3c7e8', roughness: 0.4 }),
   pole: new THREE.MeshStandardMaterial({ color: '#aeb8bf', roughness: 0.6, metalness: 0.5 }),
@@ -137,7 +161,8 @@ function buildPlate(): Plate {
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: true }),
+    // オーバーレイシーンで最後に描くため深度は読まない
+    new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false, depthWrite: false }),
   );
   sprite.scale.set(1.85, 0.6, 1);
   return { sprite, canvas, tex, sig: '' };
@@ -213,7 +238,9 @@ function buildAlertSprite(): THREE.Sprite {
   g.fillText('!', 32, 35);
   const tex = new THREE.CanvasTexture(cv);
   tex.colorSpace = THREE.SRGBColorSpace;
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true }));
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: tex, transparent: true, depthTest: false, depthWrite: false,
+  }));
   s.scale.set(0.45, 0.45, 1);
   return s;
 }
@@ -355,14 +382,13 @@ function buildMachine(m: Machine): MachineView {
     portFoups.push(fv);
   }
 
-  // 銘板と警告
+  // 銘板と警告(ポストプロセスを通さないオーバーレイシーンに置くため、
+  // 機体グループには入れずワールド座標で持つ。装置は設置後動かない)
   const plate = buildPlate();
-  plate.sprite.position.set(0, topY + 0.65, 0);
-  group.add(plate.sprite);
+  plate.sprite.position.set(m.col + m.w / 2, topY + 0.65, m.row + m.h / 2);
   const alert = buildAlertSprite();
-  alert.position.set(0, topY + 1.05, 0);
+  alert.position.set(m.col + m.w / 2, topY + 1.05, m.row + m.h / 2);
   alert.visible = false;
-  group.add(alert);
 
   return { group, lights, plate, alert, portFoups, slotFoups, topY };
 }
@@ -371,7 +397,7 @@ function setLight(l: THREE.Mesh, color: string, on: boolean) {
   const mat = l.material as THREE.MeshStandardMaterial;
   mat.color.set(on ? color : LIGHT_COLORS.off);
   mat.emissive.set(on ? color : '#000000');
-  mat.emissiveIntensity = on ? 0.85 : 0;
+  mat.emissiveIntensity = on ? 2.2 : 0; // ブルームで灯りとして光らせる
 }
 
 // ---- ビークルビュー ----
@@ -427,7 +453,7 @@ export class View3D {
   private selBox: THREE.LineSegments;
   private selGlow: THREE.Mesh;
 
-  constructor(private scene: THREE.Scene) {
+  constructor(private scene: THREE.Scene, private overlay: THREE.Scene) {
     scene.add(this.railGroup);
     scene.add(this.heatGroup);
     scene.add(this.previewGroup);
@@ -476,12 +502,14 @@ export class View3D {
         view = buildMachine(m);
         this.machineViews.set(m.id, view);
         this.scene.add(view.group);
+        this.overlay.add(view.plate.sprite, view.alert);
       }
       this.updateMachine(view, m, vs, camera);
     }
     for (const [id, view] of this.machineViews) {
       if (!seen.has(id)) {
         this.scene.remove(view.group);
+        this.overlay.remove(view.plate.sprite, view.alert);
         disposePlate(view.plate);
         this.machineViews.delete(id);
       }
@@ -552,7 +580,7 @@ export class View3D {
       const dist =
         camera.type === 'OrthographicCamera'
           ? ORTHO_FADE_BASE_DIST / camera.zoom
-          : camera.position.distanceTo(view.group.position);
+          : camera.position.distanceTo(view.plate.sprite.position);
       const t = clamp01((dist - PLATE_FADE_NEAR) / (PLATE_FADE_FAR - PLATE_FADE_NEAR));
       plateMat.opacity = 1 - t;
       view.plate.sprite.visible = t < 0.98;
@@ -597,12 +625,13 @@ export class View3D {
       else cone.rotation.x = -Math.PI / 2;
       this.railGroup.add(cone);
     }
-    // 吊り金具(支柱スタブ)
+    // 吊り金具(FFU天井まで届く支柱)
+    const hangLen = CEIL_Y - RAIL_Y - 0.05;
     for (const k of game.rail.allNodes()) {
       const { c, r } = parseKey(k);
       this.railGroup.add(mesh(
-        GEO.box, MAT.hanger, 0.045, 0.28, 0.045,
-        c + 0.5, RAIL_Y + 0.19, r + 0.5, false,
+        GEO.box, MAT.hanger, 0.045, hangLen, 0.045,
+        c + 0.5, RAIL_Y + 0.05 + hangLen / 2, r + 0.5, false,
       ));
     }
   }

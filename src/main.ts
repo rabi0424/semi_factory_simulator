@@ -51,7 +51,7 @@ function setViewMode(mode: '2d' | '3d') {
   game.onMessage(mode === '2d' ? '2Dモード(真上固定)に切替' : '3Dモードに切替');
 }
 
-const view3d = new View3D(sceneCtx.scene);
+const view3d = new View3D(sceneCtx.scene, sceneCtx.overlay);
 
 // ---- 入力(Pointer Events: 左=ツール, 右クリック=装置回転/右ドラッグ=視点回転(3D),
 // 中=パン, ホイール=ズーム) ----
@@ -220,15 +220,17 @@ let uiTimer = 0;
 let saveTimer = 0;
 
 function frame(now: number) {
-  // 低fps環境でもシミュレーション実速度を保てるよう上限は広めに取る
-  const dt = Math.min(0.25, (now - last) / 1000);
+  // 低fps環境でもシミュレーション実速度を保てるよう上限は広めに取る。
+  // タイマー異常(rAFタイムスタンプの逆行)で負のdtが入るとシム時刻が
+  // 巻き戻ってUI更新まで止まるため、下限0でクランプする
+  const dt = Math.max(0, Math.min(0.25, (now - last) / 1000));
   last = now;
   vs.time += dt;
 
   game.update(dt);
   view3d.sync(game, vs, sceneCtx.camera);
   sceneCtx.controls.update();
-  sceneCtx.renderer.render(sceneCtx.scene, sceneCtx.camera);
+  sceneCtx.render();
 
   uiTimer += dt;
   if (uiTimer >= 0.15) {
@@ -256,6 +258,7 @@ declare global {
       addRail: (tiles: [number, number][]) => void;
       scene?: unknown; // デバッグ用
       camera?: unknown; // デバッグ用(常に現在アクティブなカメラを指す)
+      controls?: unknown; // デバッグ用(カメラ移動テストに使う)
       mode?: '2d' | '3d';
       setMode?: (mode: '2d' | '3d') => void;
     };
@@ -264,6 +267,7 @@ declare global {
 window.__sim = {
   game, vs, TILE,
   scene: sceneCtx.scene,
+  controls: sceneCtx.controls,
   get camera() { return sceneCtx.camera; },
   get mode() { return sceneCtx.mode; },
   setMode: setViewMode,
