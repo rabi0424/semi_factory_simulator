@@ -206,6 +206,11 @@ window.addEventListener('keydown', (e) => {
 // ---- セーブ/ロード ----
 if (loadFromLocal(game)) {
   setTimeout(() => game.onMessage('前回のセーブデータを読み込みました'), 400);
+  // 旧バージョンからの移行注意(ロード通知のトーストが消えた頃に表示)
+  if (game.migrationNotice) {
+    const notice = game.migrationNotice;
+    setTimeout(() => game.onMessage(notice), 3200);
+  }
 }
 window.addEventListener('beforeunload', () => saveToLocal(game));
 

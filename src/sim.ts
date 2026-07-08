@@ -5,7 +5,7 @@ import {
   FURNACE_BATCH, FURNACE_WAIT,
   FAIL_BASE, FAIL_DIRTY_COEF, REPAIR_TIME, SAVE_VERSION,
   START_MONEY, OHT_COST, RAIL_COST, SELL_RATIO, NODE_PRICE_BONUS, MAX_FLEET,
-  PRODUCTS, PRODUCT_ORDER, stepsOf,
+  PRODUCTS, PRODUCT_ORDER, stepsOf, servesOf, DUV_GEN,
   genFromCompleted, nodeLabel,
   rotSize, rotPorts,
 } from './config';
@@ -83,7 +83,7 @@ export interface Stats {
 let nextId = 1;
 
 const zeroByProduct = (): Record<ProductId, number> =>
-  ({ diode: 0, logic: 0, dram: 0, cpu: 0 });
+  ({ diode: 0, logic: 0, power: 0, dram: 0, flash: 0, cpu: 0 });
 
 export class Game {
   machines: Machine[] = [];
@@ -110,10 +110,12 @@ export class Game {
   completedByProduct = zeroByProduct();
   // 製品ごとの確定プロセス世代。新規投入ロットはこの世代のレシピで流れる
   productGen = zeroByProduct();
-  spawnWeights: Record<ProductId, number> = { diode: 1, logic: 0, dram: 0, cpu: 0 };
+  spawnWeights: Record<ProductId, number> = { ...zeroByProduct(), diode: 1 };
   waitSamples: number[] = [];       // 搬送待ち時間の直近サンプル
   tpHistory: number[] = [];         // 5秒おきのスループット履歴(スパークライン用)
   onMessage: (msg: string) => void = () => {};
+  // 旧バージョンのセーブを移行したときの注意書き(main側でトースト表示)
+  migrationNotice: string | null = null;
 
   constructor() {
     this.wireFleet();
@@ -394,7 +396,8 @@ export class Game {
     this.productGen[id] = g;
     this.onMessage(
       `🔬 「${PRODUCTS[id].name}」がプロセス微細化 ${nodeLabel(from)}→${nodeLabel(g)}` +
-      `(工程 ${stepsOf(id, from).length}→${stepsOf(id, g).length})`,
+      `(工程 ${stepsOf(id, from).length}→${stepsOf(id, g).length})` +
+      (from < DUV_GEN && g >= DUV_GEN ? ' ⚠ 以降の露光はDUV露光装置が必須' : ''),
     );
   }
 
@@ -571,20 +574,25 @@ export class Game {
         const steps = stepsOf(lot.product, lot.gen);
         const kind: MachineKind =
           lot.step >= steps.length ? 'ship' : steps[lot.step].kind;
+        // 露光ティア制: 90nm以降のロットの露光はDUV露光装置しか処理できない
+        const needDuv = kind === 'litho' && lot.gen >= DUV_GEN;
 
         // このピックアップ地点からレールで到達できる範囲
         const reach = this.rail.reachableFrom(tkey(p.col, p.row));
         let sawUnreachable = false;
-        let anyKind = false;        // その種類の装置が1台でも存在するか
-        let anyOperational = false; // 稼働可能(非故障)な同種装置があるか
+        let anyKind = false;        // その工程を担う装置が1台でも存在するか
+        let anyCapable = false;     // ティア要件(DUV必須など)も満たす装置があるか
+        let anyOperational = false; // 稼働可能(非故障)な装置があるか
 
         // 行き先候補: 空きin ポートを持ち、レール経路が通っている装置
         // (故障中は除く)。混雑度が最小、同点なら距離
         let bestPort: Port | null = null;
         let bestScore = Infinity;
         for (const dest of this.machines) {
-          if (dest.kind !== kind) continue;
+          if (servesOf(dest.kind) !== kind) continue;
           anyKind = true;
+          if (needDuv && dest.kind !== 'duv') continue;
+          anyCapable = true;
           if (dest.broken) continue;
           anyOperational = true;
           const inPort = dest.ports.find((x) => x.io === 'in' && !x.foup && !x.reserved);
@@ -626,12 +634,14 @@ export class Game {
         if (!bestPort) {
           // 空きが出るまで待つ。滞留がプレイヤーの見落とし由来なら警告する:
           //  - noroute: 装置はあるがレールが繋がっていない
-          //  - missing: その種類の装置を一台も置いていない
-          //  - down   : 同種装置はあるが全台が故障中
+          //  - missing: その工程を担える装置が無い(DUV必須のロットに
+          //             i線しか無い場合は「DUV露光装置が未設置」と出る)
+          //  - down   : 装置はあるが全台が故障中
           // 「全台が処理中で満杯」なだけの正常な滞留には警告を出さない
-          if (sawUnreachable) m.stall = { kind, reason: 'noroute' };
-          else if (!anyKind) m.stall = { kind, reason: 'missing' };
-          else if (!anyOperational) m.stall = { kind, reason: 'down' };
+          const dispKind: MachineKind = needDuv ? 'duv' : kind;
+          if (sawUnreachable) m.stall = { kind: dispKind, reason: 'noroute' };
+          else if (!anyKind || !anyCapable) m.stall = { kind: dispKind, reason: 'missing' };
+          else if (!anyOperational) m.stall = { kind: dispKind, reason: 'down' };
           continue;
         }
         if (this.fleet.tryAssign({ from: p, to: bestPort, lot })) {
@@ -688,13 +698,14 @@ export class Game {
     return n;
   }
 
-  // 装置種別の平均稼働率(ボトルネック診断用)。その種類が無ければ null。
+  // 工程種別の平均稼働率(ボトルネック診断用)。担う装置が無ければ null。
+  // ティア違いの装置(i線/DUV)は同じ工程として合算する。
   // 故障・修理中の装置も0側として平均に含める(実効能力を示すため)
   kindUtil(kind: MachineKind): number | null {
     let sum = 0;
     let n = 0;
     for (const m of this.machines) {
-      if (m.kind !== kind) continue;
+      if (servesOf(m.kind) !== kind) continue;
       sum += m.util;
       n++;
     }
@@ -753,13 +764,19 @@ export class Game {
   }
 
   // 保存データから状態を復元(このインスタンスを作り直す)
-  loadFrom(raw: SaveData | SaveDataV2 | SaveDataV1): boolean {
+  loadFrom(raw: SaveData | SaveDataV3 | SaveDataV2 | SaveDataV1): boolean {
     const data: SaveData | null =
       raw.v === SAVE_VERSION ? (raw as SaveData)
-      : raw.v === 2 ? migrateV2(raw as SaveDataV2)
-      : raw.v === 1 ? migrateV2(migrateV1(raw as SaveDataV1))
+      : raw.v === 3 ? migrateV3(raw as SaveDataV3)
+      : raw.v === 2 ? migrateV3(migrateV2(raw as SaveDataV2))
+      : raw.v === 1 ? migrateV3(migrateV2(migrateV1(raw as SaveDataV1)))
       : null;
     if (!data) return false;
+    // v3以前 → v4 でレシピ体系が変わり、仕掛かりロットは破棄される
+    this.migrationNotice =
+      raw.v < SAVE_VERSION && (raw as SaveDataV3).lots?.length > 0
+        ? 'レシピ体系の刷新に伴い、仕掛かり中のロットはリセットされました(工場・資金は維持)'
+        : null;
 
     this.machines = [];
     this.lots = [];
@@ -850,6 +867,8 @@ export class Game {
     }
 
     nextId = data.nextId;
+    // 移行後に解禁条件を満たしている製品(後から追加された製品など)を反映
+    this.checkUnlocks();
     return true;
   }
 
@@ -872,7 +891,7 @@ export class Game {
     this.unlocked = new Set(['diode']);
     this.completedByProduct = zeroByProduct();
     this.productGen = zeroByProduct();
-    this.spawnWeights = { diode: 1, logic: 0, dram: 0, cpu: 0 };
+    this.spawnWeights = { ...zeroByProduct(), diode: 1 };
     this.initStations();
   }
 }
@@ -915,21 +934,43 @@ export interface SaveData {
   }[];
 }
 
+// v3(FEOL/BEOLレシピ刷新前)。データ構造はv4と同一だが、ロットの工程番号が
+// 旧レシピ基準のため流用できない
+export type SaveDataV3 = SaveData;
+
+// v3 → v4: 工場レイアウト・資金・実績・レールは維持し、仕掛かりロット
+// (装置内・ポート上・搬送中・保管棚)は新旧レシピの工程番号が整合しない
+// ためすべて破棄する
+function migrateV3(old: SaveDataV3): SaveData {
+  return {
+    ...old,
+    v: SAVE_VERSION,
+    lots: [],
+    machines: old.machines.map((m) => ({
+      ...m,
+      busy: [], procLeft: 0, hold: [], batch: [], batchTimer: 0, storage: [],
+      ports: m.ports.map((p) => ({ ...p, foup: null, readyAt: -1 })),
+    })),
+    vehicles: old.vehicles.map((v) => ({
+      ...v, state: 'idle' as VehState, carrying: null, job: null,
+    })),
+  };
+}
+
 // v2(プロセスノード微細化の導入前): productGen 無し・ロットに gen 無し
 export interface SaveDataV2 extends Omit<SaveData, 'v' | 'productGen' | 'lots'> {
   v: number;
   lots: { id: number; product: ProductId; step: number; y: number }[];
 }
 
-// v2 → v3: 既に稼いだ量産数から各製品の到達世代を復元。既存の仕掛かりロットは
-// 投入時世代が不明なため基本レシピ(gen 0)として流し切る
-function migrateV2(old: SaveDataV2): SaveData {
+// v2 → v3: 既に稼いだ量産数から各製品の到達世代を復元
+function migrateV2(old: SaveDataV2): SaveDataV3 {
   const completed = { ...zeroByProduct(), ...old.completedByProduct };
   const productGen = zeroByProduct();
   for (const id of PRODUCT_ORDER) productGen[id] = genFromCompleted(completed[id]);
   return {
     ...old,
-    v: SAVE_VERSION,
+    v: 3,
     productGen,
     lots: old.lots.map((l) => ({ ...l, gen: 0 })),
   };
@@ -963,8 +1004,8 @@ function migrateV1(old: SaveDataV1): SaveDataV2 {
     ...old,
     v: 2,
     unlocked: ['diode', 'logic'],
-    completedByProduct: { diode: 0, logic: old.completedCount, dram: 0, cpu: 0 },
-    spawnWeights: { diode: 0, logic: 1, dram: 0, cpu: 0 },
+    completedByProduct: { ...zeroByProduct(), logic: old.completedCount },
+    spawnWeights: { ...zeroByProduct(), logic: 1 },
     lots: old.lots.map((l) => ({ ...l, product: 'logic' as ProductId })),
     machines: old.machines.map((m) => ({
       ...m,
