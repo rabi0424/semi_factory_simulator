@@ -30,7 +30,8 @@ function clamp01(t: number): number {
 const BODY_H: Record<MachineKind, number> = {
   load: 0.45, ship: 0.45,
   clean: 1.0, depo: 1.15, litho: 1.2, etch: 1.15,
-  furnace: 1.05, inspect: 0.7, stocker: 1.85,
+  furnace: 1.05, implant: 1.1, metal: 1.05, cmp: 0.85,
+  inspect: 0.7, stocker: 1.85,
 };
 
 // ---- 共有ジオメトリ / マテリアル ----
@@ -280,6 +281,24 @@ function buildMachine(m: Machine): MachineView {
       group.add(fv.group);
       slotFoups.push(fv);
     }
+  } else if (m.kind === 'implant') {
+    // ビームライン(横倒しの加速管)と高圧タンク
+    const beam = mesh(GEO.cyl, MAT.tube, 0.26, m.w * 0.6, 0.26, -m.w * 0.08, topY + 0.14, 0);
+    beam.rotation.z = Math.PI / 2;
+    group.add(beam);
+    group.add(mesh(GEO.sphere, MAT.tube, 0.42, 0.42, 0.42, m.w * 0.3, topY + 0.16, 0));
+    topY += 0.3;
+  } else if (m.kind === 'metal') {
+    // スパッタチャンバー2基
+    for (const ox of [-0.42, 0.42]) {
+      group.add(mesh(GEO.cyl, MAT.tube, 0.42, 0.3, 0.42, ox, topY + 0.15, 0));
+    }
+    topY += 0.3;
+  } else if (m.kind === 'cmp') {
+    // 研磨プラテン(広く平たい円盤)
+    group.add(mesh(GEO.cyl, MAT.tube, 0.9, 0.1, 0.9, 0, topY + 0.05, 0));
+    group.add(mesh(GEO.cyl, MAT.dock, 0.3, 0.18, 0.3, 0.45, topY + 0.12, 0.35));
+    topY += 0.18;
   } else if (m.kind === 'inspect') {
     group.add(mesh(GEO.cyl, MAT.tube, 0.3, 0.25, 0.3, 0, topY + 0.12, 0));
   }

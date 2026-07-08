@@ -29,7 +29,11 @@ interface ToolDef {
   drawIcon: (ctx: CanvasRenderingContext2D) => void;
 }
 
-const PLACEABLE: MachineKind[] = ['clean', 'depo', 'litho', 'etch', 'furnace', 'inspect'];
+// ホットバーの装置並び(おおよそ工程フロー順)と割当キー。
+// 4〜9は従来配置を維持し、追加された装置はQ/W/Eに載せる
+const PLACEABLE: MachineKind[] =
+  ['clean', 'depo', 'litho', 'etch', 'furnace', 'implant', 'metal', 'cmp', 'inspect'];
+const PLACE_KEYS = ['4', '5', '6', '7', '8', '9', 'Q', 'W', 'E'];
 
 export function createUI(opts: UIOpts) {
   const { root, game, vs, worldToScreen, getMode, toggleMode } = opts;
@@ -99,7 +103,7 @@ export function createUI(opts: UIOpts) {
     { key: '2', name: 'レール', cost: RAIL_COST, tool: { mode: 'rail', kind: null }, drawIcon: iconRail },
     { key: '3', name: 'レール撤去', tool: { mode: 'railErase', kind: null }, drawIcon: iconRailErase },
     ...PLACEABLE.map((kind, i) => ({
-      key: String(4 + i),
+      key: PLACE_KEYS[i],
       name: MACHINE_DEFS[kind].name.replace('装置', ''),
       tool: { mode: 'place', kind } as Tool,
       cost: MACHINE_DEFS[kind].cost,

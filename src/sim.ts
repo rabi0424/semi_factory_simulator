@@ -83,7 +83,7 @@ export interface Stats {
 let nextId = 1;
 
 const zeroByProduct = (): Record<ProductId, number> =>
-  ({ diode: 0, logic: 0, dram: 0, cpu: 0 });
+  ({ diode: 0, logic: 0, power: 0, dram: 0, flash: 0, cpu: 0 });
 
 export class Game {
   machines: Machine[] = [];
@@ -110,10 +110,12 @@ export class Game {
   completedByProduct = zeroByProduct();
   // 製品ごとの確定プロセス世代。新規投入ロットはこの世代のレシピで流れる
   productGen = zeroByProduct();
-  spawnWeights: Record<ProductId, number> = { diode: 1, logic: 0, dram: 0, cpu: 0 };
+  spawnWeights: Record<ProductId, number> = { ...zeroByProduct(), diode: 1 };
   waitSamples: number[] = [];       // 搬送待ち時間の直近サンプル
   tpHistory: number[] = [];         // 5秒おきのスループット履歴(スパークライン用)
   onMessage: (msg: string) => void = () => {};
+  // 旧バージョンのセーブを移行したときの注意書き(main側でトースト表示)
+  migrationNotice: string | null = null;
 
   constructor() {
     this.wireFleet();
@@ -753,13 +755,19 @@ export class Game {
   }
 
   // 保存データから状態を復元(このインスタンスを作り直す)
-  loadFrom(raw: SaveData | SaveDataV2 | SaveDataV1): boolean {
+  loadFrom(raw: SaveData | SaveDataV3 | SaveDataV2 | SaveDataV1): boolean {
     const data: SaveData | null =
       raw.v === SAVE_VERSION ? (raw as SaveData)
-      : raw.v === 2 ? migrateV2(raw as SaveDataV2)
-      : raw.v === 1 ? migrateV2(migrateV1(raw as SaveDataV1))
+      : raw.v === 3 ? migrateV3(raw as SaveDataV3)
+      : raw.v === 2 ? migrateV3(migrateV2(raw as SaveDataV2))
+      : raw.v === 1 ? migrateV3(migrateV2(migrateV1(raw as SaveDataV1)))
       : null;
     if (!data) return false;
+    // v3以前 → v4 でレシピ体系が変わり、仕掛かりロットは破棄される
+    this.migrationNotice =
+      raw.v < SAVE_VERSION && (raw as SaveDataV3).lots?.length > 0
+        ? 'レシピ体系の刷新に伴い、仕掛かり中のロットはリセットされました(工場・資金は維持)'
+        : null;
 
     this.machines = [];
     this.lots = [];
@@ -850,6 +858,8 @@ export class Game {
     }
 
     nextId = data.nextId;
+    // 移行後に解禁条件を満たしている製品(後から追加された製品など)を反映
+    this.checkUnlocks();
     return true;
   }
 
@@ -872,7 +882,7 @@ export class Game {
     this.unlocked = new Set(['diode']);
     this.completedByProduct = zeroByProduct();
     this.productGen = zeroByProduct();
-    this.spawnWeights = { diode: 1, logic: 0, dram: 0, cpu: 0 };
+    this.spawnWeights = { ...zeroByProduct(), diode: 1 };
     this.initStations();
   }
 }
@@ -915,21 +925,43 @@ export interface SaveData {
   }[];
 }
 
+// v3(FEOL/BEOLレシピ刷新前)。データ構造はv4と同一だが、ロットの工程番号が
+// 旧レシピ基準のため流用できない
+export type SaveDataV3 = SaveData;
+
+// v3 → v4: 工場レイアウト・資金・実績・レールは維持し、仕掛かりロット
+// (装置内・ポート上・搬送中・保管棚)は新旧レシピの工程番号が整合しない
+// ためすべて破棄する
+function migrateV3(old: SaveDataV3): SaveData {
+  return {
+    ...old,
+    v: SAVE_VERSION,
+    lots: [],
+    machines: old.machines.map((m) => ({
+      ...m,
+      busy: [], procLeft: 0, hold: [], batch: [], batchTimer: 0, storage: [],
+      ports: m.ports.map((p) => ({ ...p, foup: null, readyAt: -1 })),
+    })),
+    vehicles: old.vehicles.map((v) => ({
+      ...v, state: 'idle' as VehState, carrying: null, job: null,
+    })),
+  };
+}
+
 // v2(プロセスノード微細化の導入前): productGen 無し・ロットに gen 無し
 export interface SaveDataV2 extends Omit<SaveData, 'v' | 'productGen' | 'lots'> {
   v: number;
   lots: { id: number; product: ProductId; step: number; y: number }[];
 }
 
-// v2 → v3: 既に稼いだ量産数から各製品の到達世代を復元。既存の仕掛かりロットは
-// 投入時世代が不明なため基本レシピ(gen 0)として流し切る
-function migrateV2(old: SaveDataV2): SaveData {
+// v2 → v3: 既に稼いだ量産数から各製品の到達世代を復元
+function migrateV2(old: SaveDataV2): SaveDataV3 {
   const completed = { ...zeroByProduct(), ...old.completedByProduct };
   const productGen = zeroByProduct();
   for (const id of PRODUCT_ORDER) productGen[id] = genFromCompleted(completed[id]);
   return {
     ...old,
-    v: SAVE_VERSION,
+    v: 3,
     productGen,
     lots: old.lots.map((l) => ({ ...l, gen: 0 })),
   };
@@ -963,8 +995,8 @@ function migrateV1(old: SaveDataV1): SaveDataV2 {
     ...old,
     v: 2,
     unlocked: ['diode', 'logic'],
-    completedByProduct: { diode: 0, logic: old.completedCount, dram: 0, cpu: 0 },
-    spawnWeights: { diode: 0, logic: 1, dram: 0, cpu: 0 },
+    completedByProduct: { ...zeroByProduct(), logic: old.completedCount },
+    spawnWeights: { ...zeroByProduct(), logic: 1 },
     lots: old.lots.map((l) => ({ ...l, product: 'logic' as ProductId })),
     machines: old.machines.map((m) => ({
       ...m,
