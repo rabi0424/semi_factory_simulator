@@ -5,6 +5,7 @@ import { createScene } from './three/scene';
 import { View3D } from './three/view3d';
 import type { ViewState } from './view';
 import { createUI } from './ui';
+import { sound } from './sound';
 import { tkey, parseKey } from './rail';
 import type { TileKey } from './rail';
 
@@ -34,6 +35,10 @@ game.onMessage = (msg) => {
   toast.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => toast.classList.remove('show'), 2200);
+  // メッセージ種別ごとの通知音
+  if (msg.includes('故障しました')) sound.alarm();
+  else if (msg.includes('資金不足') || msg.includes('できません')) sound.deny();
+  else if (msg.includes('🎉') || msg.includes('🔬')) sound.unlock();
 };
 
 // コンテキストカードのアンカー: 装置の右肩上空を画面座標へ投影
@@ -90,9 +95,12 @@ function extendRailPath(c: number, r: number) {
 }
 
 function commitRailPath() {
-  game.buyRailPath(vs.railPath); // 資金不足なら1区間も敷かれない(トースト通知)
+  // 資金不足なら1区間も敷かれない(トースト+エラー音はonMessage側)
+  if (vs.railPath.length > 1 && game.buyRailPath(vs.railPath)) sound.rail();
   vs.railPath = [];
 }
+
+window.addEventListener('pointerdown', () => sound.resume(), { capture: true });
 
 canvas.addEventListener('pointerdown', (e) => {
   updateCursor(e.clientX, e.clientY);
@@ -114,12 +122,14 @@ canvas.addEventListener('pointerdown', (e) => {
       break;
     }
     case 'place': {
-      if (vs.tool.kind) game.addMachine(vs.tool.kind, c, r, vs.toolRot);
+      if (vs.tool.kind && game.addMachine(vs.tool.kind, c, r, vs.toolRot)) {
+        sound.place();
+      }
       break;
     }
     case 'demolish': {
       const m = game.machineAtTile(c, r);
-      if (m) game.removeMachine(m);
+      if (m && game.removeMachine(m)) sound.place();
       break;
     }
     case 'rail': {
@@ -218,6 +228,7 @@ window.addEventListener('beforeunload', () => saveToLocal(game));
 let last = performance.now();
 let uiTimer = 0;
 let saveTimer = 0;
+let lastCompleted = game.completedCount;
 
 function frame(now: number) {
   // 低fps環境でもシミュレーション実速度を保てるよう上限は広めに取る。
@@ -236,6 +247,9 @@ function frame(now: number) {
   if (uiTimer >= 0.15) {
     uiTimer = 0;
     ui.refresh();
+    // ロット完成のチャイム(メッセージが無いイベントなのでカウンタ監視)
+    if (game.completedCount > lastCompleted) sound.chime();
+    lastCompleted = game.completedCount;
   }
   saveTimer += dt;
   if (saveTimer >= AUTOSAVE_INTERVAL) {
