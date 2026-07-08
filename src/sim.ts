@@ -1,9 +1,10 @@
 import {
   MAP_COLS, MAP_ROWS, MACHINE_DEFS,
-  MIN_CLEANLINESS, SCRAP_THRESHOLD, YIELD_WINDOW,
+  MIN_CLEANLINESS, SCRAP_THRESHOLD, YIELD_WINDOW, UTIL_TAU,
   DEFAULT_SPAWN_INTERVAL, STOCKER_CAP,
   FURNACE_BATCH, FURNACE_WAIT,
   FAIL_BASE, FAIL_DIRTY_COEF, REPAIR_TIME, SAVE_VERSION,
+  START_MONEY, OHT_COST, RAIL_COST, SELL_RATIO, NODE_PRICE_BONUS, MAX_FLEET,
   PRODUCTS, PRODUCT_ORDER, stepsOf,
   genFromCompleted, nodeLabel,
   rotSize, rotPorts,
@@ -59,12 +60,14 @@ export interface Machine {
   broken: boolean;       // 故障中
   repairLeft: number;    // >0 なら修理進行中
   jobs: number;
+  util: number;          // 稼働率(直近~45秒のEMA、0..1)
   ports: Port[];
   stall: StallInfo | null; // 出力FOUPが次工程へ搬送できず滞留している理由(無ければnull)
   storage: Lot[];        // ストッカーの内部保管棚
 }
 
 export interface Stats {
+  money: number;
   wip: number;
   completed: number;
   scrapped: number;
@@ -93,6 +96,7 @@ export class Game {
   simTime = 0;
   paused = false;
   speed = 1;
+  money = START_MONEY;
   spawnInterval = DEFAULT_SPAWN_INTERVAL;
   private spawnTimer = 0;
   private dispatchTimer = 0;
@@ -152,6 +156,11 @@ export class Game {
     return true;
   }
 
+  // 購入可能か(設置ゴーストの色分けにも使う)
+  canAfford(kind: MachineKind): boolean {
+    return MACHINE_DEFS[kind].cost <= this.money;
+  }
+
   addMachine(
     kind: MachineKind, col: number, row: number, rot = 0, force = false,
   ): Machine | null {
@@ -159,13 +168,20 @@ export class Game {
       this.onMessage('そこには設置できません');
       return null;
     }
+    if (!force && !this.canAfford(kind)) {
+      this.onMessage(
+        `資金不足: ${MACHINE_DEFS[kind].name} は ¥${MACHINE_DEFS[kind].cost.toLocaleString()}`,
+      );
+      return null;
+    }
     const def = MACHINE_DEFS[kind];
+    if (!force) this.money -= def.cost;
     const { w, h } = rotSize(def, rot);
     const serial = this.machines.filter((x) => x.kind === kind).length + 1;
     const m: Machine = {
       id: nextId++, kind, label: `${def.short}-${serial}`, col, row, rot, w, h,
       busy: [], procLeft: 0, holdQueue: [], batch: [], batchTimer: 0,
-      cleanliness: 1, broken: false, repairLeft: 0, jobs: 0,
+      cleanliness: 1, broken: false, repairLeft: 0, jobs: 0, util: 0,
       ports: [], stall: null, storage: [],
     };
     m.ports = rotPorts(def, rot).map((p) => ({
@@ -198,6 +214,30 @@ export class Game {
     }
     this.machines = this.machines.filter((x) => x !== m);
     this.rebuildPortTiles();
+    this.money += MACHINE_DEFS[m.kind].cost * SELL_RATIO;
+    return true;
+  }
+
+  // レール敷設(ドラッグ経路の一括購入)。既存エッジは課金しない。
+  // 資金が足りなければ1区間も敷かずに全体を拒否する
+  buyRailPath(path: TileKey[]): boolean {
+    const newEdges: [TileKey, TileKey][] = [];
+    const seen = new Set<string>();
+    for (let i = 1; i < path.length; i++) {
+      const a = path[i - 1];
+      const b = path[i];
+      const key = `${a}>${b}`;
+      if (this.rail.hasEdge(a, b) || seen.has(key)) continue;
+      seen.add(key);
+      newEdges.push([a, b]);
+    }
+    const cost = newEdges.length * RAIL_COST;
+    if (cost > this.money) {
+      this.onMessage(`資金不足: レール${newEdges.length}区間は ¥${cost.toLocaleString()}`);
+      return false;
+    }
+    this.money -= cost;
+    for (const [a, b] of newEdges) this.rail.addEdge(a, b);
     return true;
   }
 
@@ -207,7 +247,26 @@ export class Game {
       this.onMessage('ビークルがいる区間は撤去できません');
       return;
     }
-    this.rail.removeTile(k);
+    const removed = this.rail.removeTile(k);
+    this.money += removed * RAIL_COST * SELL_RATIO;
+  }
+
+  buyVehicle(): boolean {
+    if (this.fleet.size >= MAX_FLEET) return false;
+    if (this.money < OHT_COST) {
+      this.onMessage(`資金不足: OHTは1台 ¥${OHT_COST.toLocaleString()}`);
+      return false;
+    }
+    this.money -= OHT_COST;
+    this.fleet.size++;
+    return true;
+  }
+
+  sellVehicle(): boolean {
+    if (this.fleet.size <= 0) return false;
+    this.fleet.size--;
+    this.money += OHT_COST * SELL_RATIO;
+    return true;
   }
 
   startRepair(m: Machine): boolean {
@@ -302,6 +361,9 @@ export class Game {
 
     const product = this.pickSpawnProduct();
     if (!product) return; // 投入比率がすべて0
+    // ウェハ原価を払えないなら投入を見送る(資金が入り次第再開)
+    if (this.money < PRODUCTS[product].waferCost) return;
+    this.money -= PRODUCTS[product].waferCost;
     this.spawnTimer = 0;
     const lot: Lot = {
       id: nextId++, product, step: 0, yield_: 1, gen: this.productGen[product],
@@ -353,6 +415,10 @@ export class Game {
       for (const p of m.ports) {
         if (p.foup) {
           const done = p.foup;
+          // 売上 = 単価 × 歩留まり × プロセス世代ボーナス
+          this.money +=
+            PRODUCTS[done.product].price * done.yield_ *
+            (1 + NODE_PRICE_BONUS * done.gen);
           this.completedCount++;
           this.completedByProduct[done.product]++;
           this.recentYields.push(done.yield_);
@@ -383,6 +449,11 @@ export class Game {
       }
       return;
     }
+
+    // 稼働率(EMA)。処理中=1、それ以外(故障・待機・出力詰まり)=0 に向けて
+    // なだらかに追従する。ボトルネック診断用
+    const utilTarget = m.busy.length > 0 ? 1 : 0;
+    m.util += (utilTarget - m.util) * Math.min(1, dt / UTIL_TAU);
 
     // 故障: 修理が始まっていれば進行、そうでなければ停止したまま
     if (m.broken) {
@@ -583,6 +654,7 @@ export class Game {
         ? this.waitSamples.reduce((s, w) => s + w, 0) / this.waitSamples.length
         : 0;
     return {
+      money: this.money,
       wip: this.lots.length,
       completed: this.completedCount,
       scrapped: this.scrappedCount,
@@ -616,6 +688,19 @@ export class Game {
     return n;
   }
 
+  // 装置種別の平均稼働率(ボトルネック診断用)。その種類が無ければ null。
+  // 故障・修理中の装置も0側として平均に含める(実効能力を示すため)
+  kindUtil(kind: MachineKind): number | null {
+    let sum = 0;
+    let n = 0;
+    for (const m of this.machines) {
+      if (m.kind !== kind) continue;
+      sum += m.util;
+      n++;
+    }
+    return n > 0 ? sum / n : null;
+  }
+
   // ---- セーブ/ロード ----
 
   serialize(): SaveData {
@@ -625,6 +710,7 @@ export class Game {
       simTime: this.simTime,
       spawnInterval: this.spawnInterval,
       speed: this.speed,
+      money: this.money,
       nextId,
       completedCount: this.completedCount,
       scrappedCount: this.scrappedCount,
@@ -642,7 +728,7 @@ export class Game {
       machines: this.machines.map((m) => ({
         id: m.id, kind: m.kind, label: m.label,
         col: m.col, row: m.row, rot: m.rot,
-        clean: m.cleanliness,
+        clean: m.cleanliness, util: m.util,
         broken: m.broken, repair: m.repairLeft, jobs: m.jobs,
         busy: ids(m.busy), procLeft: m.procLeft,
         hold: ids(m.holdQueue), batch: ids(m.batch), batchTimer: m.batchTimer,
@@ -684,6 +770,7 @@ export class Game {
     this.simTime = data.simTime;
     this.spawnInterval = data.spawnInterval;
     this.speed = data.speed;
+    this.money = data.money ?? START_MONEY; // 経済導入前のセーブは初期資金で開始
     this.completedCount = data.completedCount;
     this.scrappedCount = data.scrappedCount;
     // 旧データ(recentYields無し)は保存済みの完成実績から復元
@@ -717,6 +804,7 @@ export class Game {
       m.id = md.id;
       m.label = md.label;
       m.cleanliness = md.clean;
+      m.util = md.util ?? 0;
       m.broken = md.broken;
       m.repairLeft = md.repair;
       m.jobs = md.jobs;
@@ -772,6 +860,7 @@ export class Game {
     this.fleet = new Fleet(this.rail);
     this.wireFleet();
     this.simTime = 0;
+    this.money = START_MONEY;
     this.spawnTimer = 0;
     this.completions = [];
     this.completedCount = 0;
@@ -795,6 +884,7 @@ export interface SaveData {
   simTime: number;
   spawnInterval: number;
   speed: number;
+  money?: number;          // 経済導入前のセーブには無い
   nextId: number;
   completedCount: number;
   scrappedCount: number;
@@ -810,7 +900,7 @@ export interface SaveData {
   machines: {
     id: number; kind: MachineKind; label: string;
     col: number; row: number; rot: number;
-    clean: number; broken: boolean; repair: number; jobs: number;
+    clean: number; util?: number; broken: boolean; repair: number; jobs: number;
     busy: number[]; procLeft: number; hold: number[];
     batch: number[]; batchTimer: number;
     storage: number[];

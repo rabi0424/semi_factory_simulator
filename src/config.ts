@@ -27,6 +27,7 @@ export interface MachineDef {
   accent: string;     // 筐体のアクセントライン色
   w: number;          // フットプリント [タイル]
   h: number;
+  cost: number;       // 購入価格 [¥]
   procTime: number;   // 処理時間 [秒]
   baseDefect: number; // 1工程あたりの基礎欠陥率
   wear: number;       // 1ジョブごとの清浄度低下
@@ -40,55 +41,55 @@ export interface MachineDef {
 export const MACHINE_DEFS: Record<MachineKind, MachineDef> = {
   load: {
     name: '投入ステーション', short: '投入', accent: '#78909c',
-    w: 2, h: 2, procTime: 0, baseDefect: 0, wear: 0, placeable: false,
+    w: 2, h: 2, cost: 0, procTime: 0, baseDefect: 0, wear: 0, placeable: false,
     desc: '新しいロット(FOUP)がここに払い出される',
     ports: [{ dx: 0, dy: 1, io: 'out' }, { dx: 1, dy: 1, io: 'out' }],
   },
   clean: {
     name: '洗浄装置', short: 'CLN', accent: '#4f9cc7',
-    w: 2, h: 2, procTime: 2, baseDefect: 0.005, wear: 0.02, placeable: true,
+    w: 2, h: 2, cost: 2000, procTime: 2, baseDefect: 0.005, wear: 0.02, placeable: true,
     desc: 'ウェハ表面を洗浄する。速くて汚れにくい',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 1, dy: 1, io: 'out' }],
   },
   depo: {
     name: '成膜装置', short: 'DEP', accent: '#8e7cc3',
-    w: 2, h: 2, procTime: 3, baseDefect: 0.02, wear: 0.035, placeable: true,
+    w: 2, h: 2, cost: 3000, procTime: 3, baseDefect: 0.02, wear: 0.035, placeable: true,
     desc: '薄膜を堆積させる。使うほど汚れる',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 1, dy: 1, io: 'out' }],
   },
   litho: {
     name: '露光装置', short: 'LITHO', accent: '#c7a13f',
-    w: 3, h: 2, procTime: 4, baseDefect: 0.025, wear: 0.03, placeable: true,
+    w: 3, h: 2, cost: 8000, procTime: 4, baseDefect: 0.025, wear: 0.03, placeable: true,
     desc: '回路パターンを転写する。工場最大の装置。多くの製品が複数回通り、ボトルネックになりやすい要衝',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 2, dy: 1, io: 'out' }],
   },
   etch: {
     name: 'エッチング装置', short: 'ETCH', accent: '#c77e4f',
-    w: 2, h: 2, procTime: 3, baseDefect: 0.02, wear: 0.035, placeable: true,
+    w: 2, h: 2, cost: 3000, procTime: 3, baseDefect: 0.02, wear: 0.035, placeable: true,
     desc: 'パターンに沿って膜を削る',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 1, dy: 1, io: 'out' }],
   },
   furnace: {
     name: '拡散炉', short: 'FUR', accent: '#b3574d',
-    w: 3, h: 2, procTime: 12, baseDefect: 0.008, wear: 0.05, placeable: true,
+    w: 3, h: 2, cost: 5000, procTime: 12, baseDefect: 0.008, wear: 0.05, placeable: true,
     desc: 'バッチ炉。最大3ロットを同時に酸化/アニール処理。満載で焼くほど効率的だが、待ちすぎるとフローが淀む',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 2, dy: 1, io: 'out' }],
   },
   inspect: {
     name: '検査装置', short: 'INS', accent: '#6aa86e',
-    w: 2, h: 1, procTime: 2, baseDefect: 0, wear: 0.01, placeable: true,
+    w: 2, h: 1, cost: 1500, procTime: 2, baseDefect: 0, wear: 0.01, placeable: true,
     desc: '最終検査。歩留まりが確定し、低すぎるロットは廃棄される',
     ports: [{ dx: 0, dy: 0, io: 'in' }, { dx: 1, dy: 0, io: 'out' }],
   },
   stocker: {
     name: 'ストッカー', short: 'STK', accent: '#7887a0',
-    w: 2, h: 2, procTime: 0, baseDefect: 0, wear: 0, placeable: true,
+    w: 2, h: 2, cost: 1200, procTime: 0, baseDefect: 0, wear: 0, placeable: true,
     desc: 'FOUPの自動倉庫。行き先が満杯のロットを退避させ、詰まり(デッドロック)を防ぐ',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 1, dy: 1, io: 'out' }],
   },
   ship: {
     name: '出荷ステーション', short: '出荷', accent: '#78909c',
-    w: 2, h: 2, procTime: 0, baseDefect: 0, wear: 0, placeable: false,
+    w: 2, h: 2, cost: 0, procTime: 0, baseDefect: 0, wear: 0, placeable: false,
     desc: '完成ロットの搬出先',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 1, dy: 1, io: 'in' }],
   },
@@ -107,6 +108,8 @@ export interface Product {
   name: string;
   color: string;    // FOUPタグ・UIの識別色(固定順の categorical)
   unlockAt: number; // 累計完成ロット数で解禁
+  price: number;    // 出荷単価 [¥/ロット]。実売上は 単価×歩留まり×世代ボーナス
+  waferCost: number; // 投入時に支払うウェハ原価 [¥/ロット]
   steps: RecipeStep[];
 }
 
@@ -115,6 +118,7 @@ const s = (kind: MachineKind, label: string): RecipeStep => ({ kind, label });
 export const PRODUCTS: Record<ProductId, Product> = {
   diode: {
     id: 'diode', name: 'ダイオード', color: '#3f8f7a', unlockAt: 0,
+    price: 500, waferCost: 120,
     steps: [
       s('clean', '洗浄'),
       s('furnace', '酸化'),
@@ -125,6 +129,7 @@ export const PRODUCTS: Record<ProductId, Product> = {
   },
   logic: {
     id: 'logic', name: 'ロジックIC', color: '#4a7dbb', unlockAt: 6,
+    price: 1300, waferCost: 300,
     steps: [
       s('clean', '初期洗浄'),
       s('depo', '成膜 ①'),
@@ -139,6 +144,7 @@ export const PRODUCTS: Record<ProductId, Product> = {
   },
   dram: {
     id: 'dram', name: 'DRAM', color: '#b05fa3', unlockAt: 30,
+    price: 2400, waferCost: 550,
     steps: [
       s('clean', '初期洗浄'),
       s('furnace', '酸化'),
@@ -157,6 +163,7 @@ export const PRODUCTS: Record<ProductId, Product> = {
   },
   cpu: {
     id: 'cpu', name: 'CPU', color: '#c26b3d', unlockAt: 70,
+    price: 4000, waferCost: 900,
     steps: [
       s('clean', '初期洗浄'),
       s('furnace', '酸化'),
@@ -247,7 +254,17 @@ export function rotPorts(def: MachineDef, rot: number): RotatedPort[] {
   });
 }
 
+// ---- 経済 ----
+// ライン拡張(装置・OHT・レール)を「どこに投資するか」の意思決定にするための
+// コスト制約。収入は出荷売上のみ: 単価 × 歩留まり × (1 + 世代ボーナス)
+export const START_MONEY = 30000;
+export const OHT_COST = 2000;         // OHTビークル1台の購入価格
+export const RAIL_COST = 25;          // レール1区間(エッジ)あたりの敷設費
+export const SELL_RATIO = 0.5;        // 装置撤去・OHT売却・レール撤去の払い戻し率
+export const NODE_PRICE_BONUS = 0.15; // プロセス世代が1つ進むごとの単価上乗せ率
+
 // ---- シミュレーション定数 ----
+export const UTIL_TAU = 45;           // 装置稼働率EMAの時定数 [秒]
 export const MIN_CLEANLINESS = 0.2;
 export const SCRAP_THRESHOLD = 0.4;   // 検査でこれ未満は廃棄
 export const YIELD_WINDOW = 30;       // 平均歩留まりの移動平均サンプル数(直近完成ロット)

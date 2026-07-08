@@ -17,6 +17,7 @@ export interface ViewState {
   toolRot: number;       // 設置ツールの回転(Rキー)
   railPath: TileKey[];   // レール敷設ドラッグ中のプレビュー経路
   selected: Machine | null;
+  highlightKind: MachineKind | null; // 工程フローパネルで選んだ装置種(フロア連動ハイライト)
   showHeat: boolean;     // 渋滞ヒートマップ表示
   time: number;
 }

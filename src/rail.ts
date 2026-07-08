@@ -36,13 +36,21 @@ export class RailNetwork {
     return (this.out.get(k)?.size ?? 0) > 0 || (this.inc.get(k)?.size ?? 0) > 0;
   }
 
-  // タイルに接続する全エッジを撤去
-  removeTile(k: TileKey) {
-    for (const b of this.out.get(k) ?? []) this.inc.get(b)?.delete(k);
+  // タイルに接続する全エッジを撤去。撤去したエッジ数を返す(払い戻し用)
+  removeTile(k: TileKey): number {
+    let removed = 0;
+    for (const b of this.out.get(k) ?? []) {
+      this.inc.get(b)?.delete(k);
+      removed++;
+    }
     this.out.delete(k);
-    for (const a of this.inc.get(k) ?? []) this.out.get(a)?.delete(k);
+    for (const a of this.inc.get(k) ?? []) {
+      this.out.get(a)?.delete(k);
+      removed++;
+    }
     this.inc.delete(k);
-    this.version++;
+    if (removed > 0) this.version++;
+    return removed;
   }
 
   // 最短経路(タイル列、from を含む)。到達不能なら null。

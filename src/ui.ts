@@ -2,8 +2,9 @@
 // 選択装置のコンテキストカード、製品/工程フローパネル。
 
 import {
-  MACHINE_DEFS, MAX_FLEET, PRODUCTS, PRODUCT_ORDER, stepsOf,
+  MACHINE_DEFS, PRODUCTS, PRODUCT_ORDER, stepsOf,
   FURNACE_BATCH, nodeLabel,
+  OHT_COST, RAIL_COST, SELL_RATIO,
 } from './config';
 import type { MachineKind, ProductId } from './config';
 import { Game } from './sim';
@@ -24,6 +25,7 @@ interface ToolDef {
   key: string;
   name: string;
   tool: Tool;
+  cost?: number; // 購入価格(装置設置系のみ)
   drawIcon: (ctx: CanvasRenderingContext2D) => void;
 }
 
@@ -36,6 +38,7 @@ export function createUI(opts: UIOpts) {
     <header id="topbar">
       <div class="brand">半導体工場シミュレーター<span class="tag">PROTO</span></div>
       <div class="stats">
+        <span class="stat money"><label>資金</label><b id="stMoney">--</b></span>
         <span class="stat"><label>仕掛かり</label><b id="stWip">0</b></span>
         <span class="stat"><label>完成</label><b id="stDone">0</b></span>
         <span class="stat"><label>廃棄</label><b id="stScrap">0</b></span>
@@ -45,9 +48,9 @@ export function createUI(opts: UIOpts) {
         <span class="stat" id="stBrokenWrap" hidden><label>故障</label><b id="stBroken" style="color:#cc4f44">0</b></span>
         <span class="stat oht">
           <label>OHT</label>
-          <button id="ohtMinus" title="保有台数を減らす">−</button>
+          <button id="ohtMinus" title="売却 (+¥${(OHT_COST * SELL_RATIO).toLocaleString()})">−</button>
           <b id="stOht">0</b>
-          <button id="ohtPlus" title="OHTを買い足す">+</button>
+          <button id="ohtPlus" title="OHTを買い足す (¥${OHT_COST.toLocaleString()})">+</button>
         </span>
       </div>
       <div class="grow"></div>
@@ -93,18 +96,20 @@ export function createUI(opts: UIOpts) {
   // ---- ホットバー ----
   const toolDefs: ToolDef[] = [
     { key: '1', name: '選択', tool: { mode: 'select', kind: null }, drawIcon: iconSelect },
-    { key: '2', name: 'レール', tool: { mode: 'rail', kind: null }, drawIcon: iconRail },
+    { key: '2', name: 'レール', cost: RAIL_COST, tool: { mode: 'rail', kind: null }, drawIcon: iconRail },
     { key: '3', name: 'レール撤去', tool: { mode: 'railErase', kind: null }, drawIcon: iconRailErase },
     ...PLACEABLE.map((kind, i) => ({
       key: String(4 + i),
       name: MACHINE_DEFS[kind].name.replace('装置', ''),
       tool: { mode: 'place', kind } as Tool,
+      cost: MACHINE_DEFS[kind].cost,
       drawIcon: (c: CanvasRenderingContext2D) =>
         iconMachine(c, MACHINE_DEFS[kind].accent, MACHINE_DEFS[kind].w),
     })),
     {
       key: '0', name: 'ストッカー',
       tool: { mode: 'place', kind: 'stocker' } as Tool,
+      cost: MACHINE_DEFS.stocker.cost,
       drawIcon: (c: CanvasRenderingContext2D) =>
         iconMachine(c, MACHINE_DEFS.stocker.accent, 2),
     },
@@ -116,7 +121,9 @@ export function createUI(opts: UIOpts) {
   toolDefs.forEach((td) => {
     const btn = document.createElement('button');
     btn.className = 'tool';
-    btn.title = `${td.name} [${td.key}]`;
+    btn.title =
+      `${td.name} [${td.key}]` +
+      (td.cost ? ` — ¥${td.cost.toLocaleString()}${td.tool.mode === 'rail' ? '/区間' : ''}` : '');
     const cv = document.createElement('canvas');
     cv.width = 40;
     cv.height = 26;
@@ -126,6 +133,11 @@ export function createUI(opts: UIOpts) {
     const nm = document.createElement('span');
     nm.textContent = td.name;
     btn.append(key, cv, nm);
+    if (td.cost) {
+      const cost = document.createElement('em');
+      cost.textContent = `¥${td.cost.toLocaleString()}${td.tool.mode === 'rail' ? '/区間' : ''}`;
+      btn.append(cost);
+    }
     btn.addEventListener('click', () => setTool(td.tool));
     hotbar.appendChild(btn);
     toolBtns.push(btn);
@@ -155,12 +167,8 @@ export function createUI(opts: UIOpts) {
   }
 
   // ---- トップバーの操作 ----
-  $('#ohtPlus').addEventListener('click', () => {
-    game.fleet.size = Math.min(MAX_FLEET, game.fleet.size + 1);
-  });
-  $('#ohtMinus').addEventListener('click', () => {
-    game.fleet.size = Math.max(0, game.fleet.size - 1);
-  });
+  $('#ohtPlus').addEventListener('click', () => game.buyVehicle());
+  $('#ohtMinus').addEventListener('click', () => game.sellVehicle());
 
   const spawnRange = $('#spawnRange') as HTMLInputElement;
   const spawnLabel = $('#spawnLabel');
@@ -281,6 +289,9 @@ export function createUI(opts: UIOpts) {
   let flowSig = '';
   let stepCnt: HTMLElement[] = [];
   let stepBar: HTMLElement[] = [];
+  let stepUtil: HTMLElement[] = [];
+  let stepRows: HTMLElement[] = [];
+  let stepKinds: MachineKind[] = [];
 
   function rebuildFlow() {
     prodTabs.innerHTML = PRODUCT_ORDER.map((id) => {
@@ -308,19 +319,31 @@ export function createUI(opts: UIOpts) {
       steps
         .map(
           (st, i) => `
-        <div class="step">
+        <div class="step" data-kind="${st.kind}" title="クリックでフロア上の${MACHINE_DEFS[st.kind].name}をハイライト">
           <span class="sw" style="background:${MACHINE_DEFS[st.kind].accent}"></span>
           <span class="nm">${i + 1}. ${st.label}</span>
+          <b class="util">--</b>
           <span class="bar"><i></i></span>
           <b class="cnt">0</b>
         </div>`,
         )
         .join('') +
+      `<div class="legend">稼働率 / 仕掛かり — 工程クリックで装置をハイライト</div>` +
       (otherGen > 0
         ? `<div class="othergen">前世代のロットが ${otherGen} 流れています(旧レシピで完了)</div>`
         : '');
     stepCnt = [...flowSteps.querySelectorAll<HTMLElement>('.cnt')];
     stepBar = [...flowSteps.querySelectorAll<HTMLElement>('.bar i')];
+    stepUtil = [...flowSteps.querySelectorAll<HTMLElement>('.util')];
+    stepRows = [...flowSteps.querySelectorAll<HTMLElement>('.step')];
+    stepKinds = steps.map((st) => st.kind);
+    // 工程クリック → フロア上の該当装置種をハイライト(再クリックで解除)
+    stepRows.forEach((row) => {
+      row.addEventListener('click', () => {
+        const kind = row.dataset.kind as MachineKind;
+        vs.highlightKind = vs.highlightKind === kind ? null : kind;
+      });
+    });
   }
 
   const sparkNow = $('#sparkNow');
@@ -399,7 +422,7 @@ export function createUI(opts: UIOpts) {
     const purgeable =
       m.ports.filter((p) => p.foup && !p.reserved).length +
       m.holdQueue.length + m.batch.length + m.storage.length;
-    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${stallSig}|${m.storage.length}|${m.broken}|${purgeable}|${weights}|${game.unlocked.size}`;
+    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${Math.round(m.util * 20)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${stallSig}|${m.storage.length}|${m.broken}|${purgeable}|${weights}|${game.unlocked.size}`;
     if (sig === cardSig) return;
     cardSig = sig;
 
@@ -411,7 +434,11 @@ export function createUI(opts: UIOpts) {
         ? `<div class="row"><span>清浄度</span>
           <span class="gauge"><i style="width:${m.cleanliness * 100}%;background:${
             m.cleanliness > 0.6 ? '#3f9c5a' : m.cleanliness > 0.35 ? '#d99a2b' : '#cc4f44'
-          }"></i></span><b>${(m.cleanliness * 100).toFixed(0)}%</b></div>`
+          }"></i></span><b>${(m.cleanliness * 100).toFixed(0)}%</b></div>
+          <div class="row"><span>稼働率</span>
+          <span class="gauge"><i style="width:${m.util * 100}%;background:${
+            m.util >= 0.85 ? '#cc4f44' : m.util >= 0.6 ? '#d99a2b' : '#7761a7'
+          }"></i></span><b>${(m.util * 100).toFixed(0)}%</b></div>`
         : ''}
       ${m.kind === 'stocker'
         ? `<div class="row"><span>保管数</span><b>${m.storage.length} / 6</b></div>`
@@ -433,6 +460,8 @@ export function createUI(opts: UIOpts) {
         const prod = PRODUCTS[id];
         const row = document.createElement('div');
         row.className = 'mixrow';
+        row.title =
+          `ウェハ原価 ¥${prod.waferCost.toLocaleString()} / 出荷単価 ¥${prod.price.toLocaleString()} × 歩留まり`;
         row.innerHTML = `
           <span class="sw" style="background:${prod.color}"></span>
           <span class="nm">${prod.name}</span>
@@ -471,7 +500,7 @@ export function createUI(opts: UIOpts) {
     if (def.placeable) {
       const del = document.createElement('button');
       del.className = 'danger';
-      del.textContent = '撤去';
+      del.textContent = `撤去 (+¥${(def.cost * SELL_RATIO).toLocaleString()})`;
       del.addEventListener('click', () => {
         if (game.removeMachine(m)) vs.selected = null;
       });
@@ -483,6 +512,7 @@ export function createUI(opts: UIOpts) {
   // ---- 定期更新 ----
   function refresh() {
     const st = game.getStats();
+    $('#stMoney').textContent = `¥${Math.floor(st.money).toLocaleString()}`;
     $('#stWip').textContent = String(st.wip);
     $('#stDone').textContent = String(st.completed);
     $('#stScrap').textContent = String(st.scrapped);
@@ -515,6 +545,17 @@ export function createUI(opts: UIOpts) {
           stepCnt[i].textContent = String(n);
           stepBar[i].style.width = `${(n / maxWip) * 100}%`;
         }
+      });
+      // 工程別の装置稼働率(装置種の平均)とハイライト状態
+      stepKinds.forEach((kind, i) => {
+        const u = game.kindUtil(kind);
+        if (stepUtil[i]) {
+          stepUtil[i].textContent = u === null ? '--' : `${Math.round(u * 100)}%`;
+          stepUtil[i].style.color =
+            u === null ? 'var(--dim)'
+            : u >= 0.85 ? '#cc4f44' : u >= 0.6 ? '#b07f19' : 'var(--dim)';
+        }
+        stepRows[i]?.classList.toggle('hl', vs.highlightKind === kind);
       });
       sparkNow.textContent = `${st.throughput.toFixed(1)}/分`;
       drawSpark(st.throughput);
