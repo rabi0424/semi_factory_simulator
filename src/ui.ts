@@ -30,10 +30,11 @@ interface ToolDef {
 }
 
 // ホットバーの装置並び(おおよそ工程フロー順)と割当キー。
-// 4〜9は従来配置を維持し、追加された装置はQ/W/Eに載せる
+// 4〜9は従来配置を維持し、追加された装置はT/Q/W/Eに載せる
+// (DUVはi線露光の隣に置く)
 const PLACEABLE: MachineKind[] =
-  ['clean', 'depo', 'litho', 'etch', 'furnace', 'implant', 'metal', 'cmp', 'inspect'];
-const PLACE_KEYS = ['4', '5', '6', '7', '8', '9', 'Q', 'W', 'E'];
+  ['clean', 'depo', 'litho', 'duv', 'etch', 'furnace', 'implant', 'metal', 'cmp', 'inspect'];
+const PLACE_KEYS = ['4', '5', '6', 'T', '7', '8', '9', 'Q', 'W', 'E'];
 
 export function createUI(opts: UIOpts) {
   const { root, game, vs, worldToScreen, getMode, toggleMode } = opts;

@@ -5,7 +5,7 @@ import {
   FURNACE_BATCH, FURNACE_WAIT,
   FAIL_BASE, FAIL_DIRTY_COEF, REPAIR_TIME, SAVE_VERSION,
   START_MONEY, OHT_COST, RAIL_COST, SELL_RATIO, NODE_PRICE_BONUS, MAX_FLEET,
-  PRODUCTS, PRODUCT_ORDER, stepsOf,
+  PRODUCTS, PRODUCT_ORDER, stepsOf, servesOf, DUV_GEN,
   genFromCompleted, nodeLabel,
   rotSize, rotPorts,
 } from './config';
@@ -396,7 +396,8 @@ export class Game {
     this.productGen[id] = g;
     this.onMessage(
       `🔬 「${PRODUCTS[id].name}」がプロセス微細化 ${nodeLabel(from)}→${nodeLabel(g)}` +
-      `(工程 ${stepsOf(id, from).length}→${stepsOf(id, g).length})`,
+      `(工程 ${stepsOf(id, from).length}→${stepsOf(id, g).length})` +
+      (from < DUV_GEN && g >= DUV_GEN ? ' ⚠ 以降の露光はDUV露光装置が必須' : ''),
     );
   }
 
@@ -573,20 +574,25 @@ export class Game {
         const steps = stepsOf(lot.product, lot.gen);
         const kind: MachineKind =
           lot.step >= steps.length ? 'ship' : steps[lot.step].kind;
+        // 露光ティア制: 90nm以降のロットの露光はDUV露光装置しか処理できない
+        const needDuv = kind === 'litho' && lot.gen >= DUV_GEN;
 
         // このピックアップ地点からレールで到達できる範囲
         const reach = this.rail.reachableFrom(tkey(p.col, p.row));
         let sawUnreachable = false;
-        let anyKind = false;        // その種類の装置が1台でも存在するか
-        let anyOperational = false; // 稼働可能(非故障)な同種装置があるか
+        let anyKind = false;        // その工程を担う装置が1台でも存在するか
+        let anyCapable = false;     // ティア要件(DUV必須など)も満たす装置があるか
+        let anyOperational = false; // 稼働可能(非故障)な装置があるか
 
         // 行き先候補: 空きin ポートを持ち、レール経路が通っている装置
         // (故障中は除く)。混雑度が最小、同点なら距離
         let bestPort: Port | null = null;
         let bestScore = Infinity;
         for (const dest of this.machines) {
-          if (dest.kind !== kind) continue;
+          if (servesOf(dest.kind) !== kind) continue;
           anyKind = true;
+          if (needDuv && dest.kind !== 'duv') continue;
+          anyCapable = true;
           if (dest.broken) continue;
           anyOperational = true;
           const inPort = dest.ports.find((x) => x.io === 'in' && !x.foup && !x.reserved);
@@ -628,12 +634,14 @@ export class Game {
         if (!bestPort) {
           // 空きが出るまで待つ。滞留がプレイヤーの見落とし由来なら警告する:
           //  - noroute: 装置はあるがレールが繋がっていない
-          //  - missing: その種類の装置を一台も置いていない
-          //  - down   : 同種装置はあるが全台が故障中
+          //  - missing: その工程を担える装置が無い(DUV必須のロットに
+          //             i線しか無い場合は「DUV露光装置が未設置」と出る)
+          //  - down   : 装置はあるが全台が故障中
           // 「全台が処理中で満杯」なだけの正常な滞留には警告を出さない
-          if (sawUnreachable) m.stall = { kind, reason: 'noroute' };
-          else if (!anyKind) m.stall = { kind, reason: 'missing' };
-          else if (!anyOperational) m.stall = { kind, reason: 'down' };
+          const dispKind: MachineKind = needDuv ? 'duv' : kind;
+          if (sawUnreachable) m.stall = { kind: dispKind, reason: 'noroute' };
+          else if (!anyKind || !anyCapable) m.stall = { kind: dispKind, reason: 'missing' };
+          else if (!anyOperational) m.stall = { kind: dispKind, reason: 'down' };
           continue;
         }
         if (this.fleet.tryAssign({ from: p, to: bestPort, lot })) {
@@ -690,13 +698,14 @@ export class Game {
     return n;
   }
 
-  // 装置種別の平均稼働率(ボトルネック診断用)。その種類が無ければ null。
+  // 工程種別の平均稼働率(ボトルネック診断用)。担う装置が無ければ null。
+  // ティア違いの装置(i線/DUV)は同じ工程として合算する。
   // 故障・修理中の装置も0側として平均に含める(実効能力を示すため)
   kindUtil(kind: MachineKind): number | null {
     let sum = 0;
     let n = 0;
     for (const m of this.machines) {
-      if (m.kind !== kind) continue;
+      if (servesOf(m.kind) !== kind) continue;
       sum += m.util;
       n++;
     }

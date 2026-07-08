@@ -11,7 +11,8 @@ export type MachineKind =
   | 'load'    // 投入ステーション
   | 'clean'   // 洗浄
   | 'depo'    // 成膜(CVD: 絶縁膜・層間膜)
-  | 'litho'   // 露光
+  | 'litho'   // i線露光(〜130nm)
+  | 'duv'     // DUV露光(全世代対応。90nm以降はこれが必須)
   | 'etch'    // エッチング
   | 'furnace' // 拡散炉(バッチ処理: 酸化/アニール)
   | 'implant' // イオン注入(FEOL)
@@ -38,8 +39,16 @@ export interface MachineDef {
   baseDefect: number; // 1工程あたりの基礎欠陥率
   wear: number;       // 1ジョブごとの清浄度低下
   placeable: boolean;
+  // この装置が担う工程種。省略時は自分自身のkind。ティア違いの装置
+  // (例: DUV露光は 'litho' 工程を担う)をレシピに合流させるために使う
+  serves?: MachineKind;
   desc: string;
   ports: PortSpec[];  // ロードポート(南面に付く)
+}
+
+// 装置kindが担う工程種を解決する
+export function servesOf(kind: MachineKind): MachineKind {
+  return MACHINE_DEFS[kind].serves ?? kind;
 }
 
 // ロードポートは全装置とも南面(dy = h-1 の行)。OHTレールが
@@ -64,9 +73,16 @@ export const MACHINE_DEFS: Record<MachineKind, MachineDef> = {
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 1, dy: 1, io: 'out' }],
   },
   litho: {
-    name: '露光装置', short: 'LITHO', accent: '#c7a13f',
+    name: 'i線露光装置', short: 'LITHO', accent: '#c7a13f',
     w: 3, h: 2, cost: 8000, procTime: 4, baseDefect: 0.025, wear: 0.03, placeable: true,
-    desc: '回路パターンを転写する。工場最大の装置。多くの製品が複数回通り、ボトルネックになりやすい要衝',
+    desc: '回路パターンを転写する。多くの製品が複数回通るボトルネックの要衝。130nmまでの世代しか露光できない',
+    ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 2, dy: 1, io: 'out' }],
+  },
+  duv: {
+    name: 'DUV露光装置', short: 'DUV', accent: '#6d5fc7',
+    w: 3, h: 2, cost: 20000, procTime: 2.5, baseDefect: 0.015, wear: 0.025, placeable: true,
+    serves: 'litho',
+    desc: '深紫外スキャナ。高価だが速く欠陥も少なく、全世代を露光できる。90nm以降のロットの露光はこれが必須',
     ports: [{ dx: 0, dy: 1, io: 'in' }, { dx: 2, dy: 1, io: 'out' }],
   },
   etch: {
@@ -281,6 +297,9 @@ export const PRODUCT_ORDER: ProductId[] =
 export const PROCESS_NODES = ['250nm', '180nm', '130nm', '90nm', '65nm', '45nm'];
 export const MAX_GEN = PROCESS_NODES.length - 1;
 export const GEN_STEP = 20; // この数だけ量産するごとに1世代進む
+// 露光ティア制: この世代(90nm)以降のロットの露光はDUV露光装置が必須。
+// i線露光装置では処理できず、量産が進んだ製品は設備更新を迫られる
+export const DUV_GEN = 3;
 
 export function nodeLabel(gen: number): string {
   return PROCESS_NODES[Math.max(0, Math.min(gen, MAX_GEN))];
