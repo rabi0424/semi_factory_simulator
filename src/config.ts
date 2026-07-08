@@ -2,6 +2,7 @@
 export const TILE = 48;          // 1タイル [px](ワールド座標)
 export const MAP_COLS = 34;      // 装置9種+混流に耐える広さ
 export const MAP_ROWS = 20;
+export const CEIL_Y = 3.3;       // クリーンルーム天井(FFU面)の高さ [タイル]
 
 // ---- 装置 ----
 // 工程はFEOL(トランジスタ形成: 酸化・露光・エッチ・注入・アニール)と
