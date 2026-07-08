@@ -3,6 +3,8 @@
 // FOUP、渋滞ヒート、ツールオーバーレイをフレームごとに反映する。
 
 import * as THREE from 'three';
+import { RoundedBoxGeometry } from 'three/examples/jsm/geometries/RoundedBoxGeometry.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import {
   TILE, CEIL_Y, MACHINE_DEFS, PRODUCTS, FURNACE_BATCH,
   rotSize, rotPorts, servesOf,
@@ -85,6 +87,12 @@ const MAT = {
     clearcoat: 1, clearcoatRoughness: 0.12,
   }),
   foupLid: new THREE.MeshStandardMaterial({ color: '#d3c7e8', roughness: 0.4 }),
+  panel: new THREE.MeshPhysicalMaterial({
+    color: '#eef0f1', roughness: 0.4, roughnessMap: bodyRoughTex, metalness: 0.06,
+    clearcoat: 0.3, clearcoatRoughness: 0.45,
+  }),
+  dark: new THREE.MeshStandardMaterial({ color: '#2f353a', roughness: 0.6, metalness: 0.2 }),
+  wafer: new THREE.MeshStandardMaterial({ color: '#6f7880', roughness: 0.15, metalness: 0.9 }),
   pole: new THREE.MeshStandardMaterial({ color: '#aeb8bf', roughness: 0.6, metalness: 0.5 }),
   ghostOk: new THREE.MeshStandardMaterial({
     color: '#5da070', transparent: true, opacity: 0.4, depthWrite: false,
@@ -123,6 +131,87 @@ function mesh(
   return m;
 }
 
+// 面取りボックス。寸法ごとにジオメトリをキャッシュして共有する
+const rboxCache = new Map<string, RoundedBoxGeometry>();
+function rboxGeo(w: number, h: number, d: number, r: number): RoundedBoxGeometry {
+  const key = `${w.toFixed(3)}|${h.toFixed(3)}|${d.toFixed(3)}|${r.toFixed(3)}`;
+  let g = rboxCache.get(key);
+  if (!g) {
+    g = new RoundedBoxGeometry(w, h, d, 2, Math.min(r, w / 2, h / 2, d / 2));
+    rboxCache.set(key, g);
+  }
+  return g;
+}
+
+function rbox(
+  w: number, h: number, d: number, mat: THREE.Material,
+  x: number, y: number, z: number, r = 0.03, shadow = true,
+): THREE.Mesh {
+  const m = new THREE.Mesh(rboxGeo(w, h, d, r), mat);
+  m.position.set(x, y, z);
+  m.castShadow = shadow;
+  m.receiveShadow = true;
+  return m;
+}
+
+// FOUP内のウェハ25枚(1つのジオメトリにマージして共有)
+const waferStackGeo = (() => {
+  const parts: THREE.BufferGeometry[] = [];
+  for (let i = 0; i < 25; i++) {
+    const c = new THREE.CylinderGeometry(0.12, 0.12, 0.004, 24);
+    c.translate(0, 0.045 + i * 0.0089, 0);
+    parts.push(c);
+  }
+  return mergeGeometries(parts)!;
+})();
+
+// 装置のステータススクリーン(SCADA風)。内容は種別ごとに決定的に生成
+const screenTexCache = new Map<string, THREE.CanvasTexture>();
+function screenTex(kind: MachineKind): THREE.CanvasTexture {
+  const cached = screenTexCache.get(kind);
+  if (cached) return cached;
+  const cv = document.createElement('canvas');
+  cv.width = 192;
+  cv.height = 128;
+  const g = cv.getContext('2d')!;
+  const seed = kind.charCodeAt(0) * 7 + kind.length * 13;
+  g.fillStyle = '#0c1316';
+  g.fillRect(0, 0, 192, 128);
+  g.fillStyle = '#123339';
+  g.fillRect(0, 0, 192, 24);
+  g.fillStyle = '#7de8c8';
+  g.font = '700 13px monospace';
+  g.fillText(`${MACHINE_DEFS[kind].short}  RUN`, 8, 17);
+  g.fillStyle = '#9fb4ba';
+  g.font = '9px monospace';
+  g.fillText(`RCP A-${(seed % 90 + 10)}  TEMP 22.${seed % 10}C`, 8, 40);
+  g.fillText('VAC OK  FLOW OK', 8, 54);
+  g.fillStyle = '#1b4d43';
+  g.fillRect(8, 64, 176, 10);
+  g.fillStyle = '#43d69a';
+  g.fillRect(8, 64, 60 + (seed * 3) % 110, 10);
+  for (let i = 0; i < 16; i++) {
+    g.fillStyle = `rgba(67,214,154,${0.3 + ((i * 37 + seed) % 60) / 100})`;
+    const bh = 10 + ((i * 53 + seed) % 26);
+    g.fillRect(8 + i * 11, 122 - bh, 8, bh);
+  }
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  screenTexCache.set(kind, t);
+  return t;
+}
+
+// ポート面(rot)基準の配置ヘルパ。along = 面に沿った位置、out = 面の外向き
+function faceXZ(rot: number, along: number, out: number): [number, number] {
+  switch (rot % 4) {
+    case 0: return [along, out];   // 南(+z)
+    case 1: return [-out, along];  // 西(-x)
+    case 2: return [-along, -out]; // 北(-z)
+    default: return [out, -along]; // 東(+x)
+  }
+}
+const FACE_ROT_Y = [0, -Math.PI / 2, Math.PI, Math.PI / 2];
+
 // ---- FOUP ----
 
 interface FoupView {
@@ -132,11 +221,17 @@ interface FoupView {
 
 function buildFoup(): FoupView {
   const group = new THREE.Group();
-  group.add(mesh(GEO.box, MAT.foupBody, 0.3, 0.24, 0.3, 0, 0.12, 0));
-  group.add(mesh(GEO.box, MAT.foupLid, 0.26, 0.045, 0.26, 0, 0.255, 0, false));
-  const band = mesh(GEO.box, accentMat('#888'), 0.31, 0.05, 0.31, 0, 0.045, 0, false);
+  // 半透明シェル(中のウェハが透ける)
+  const shell = rbox(0.32, 0.3, 0.32, MAT.foupBody, 0, 0.155, 0, 0.05);
+  group.add(shell);
+  // ウェハ25枚(共有ジオメトリ)
+  const wafers = new THREE.Mesh(waferStackGeo, MAT.wafer);
+  group.add(wafers);
+  // 製品識別バンド(下部)
+  const band = mesh(GEO.box, accentMat('#888'), 0.33, 0.045, 0.33, 0, 0.025, 0, false);
   group.add(band);
-  group.add(mesh(GEO.box, MAT.foupLid, 0.12, 0.04, 0.12, 0, 0.29, 0, false)); // 把持部
+  // 天面の把持フランジ
+  group.add(mesh(GEO.box, MAT.foupLid, 0.13, 0.035, 0.13, 0, 0.325, 0, false));
   return { group, band };
 }
 
@@ -264,31 +359,110 @@ function buildMachine(m: Machine): MachineView {
   const H = BODY_H[m.kind];
   let topY = 0.1 + H;
 
-  group.add(mesh(GEO.box, MAT.plinth, m.w - 0.06, 0.1, m.h - 0.06, 0, 0.05, 0));
-  const body = mesh(GEO.box, MAT.body, m.w - 0.18, H, m.h - 0.18, 0, 0.1 + H / 2, 0);
-  body.receiveShadow = true;
-  group.add(body);
+  const rot = m.rot % 4;
+  const faceLen = (rot % 2 === 0 ? m.w : m.h) - 0.18;  // ポート面の横幅
+  const outHalf = (rot % 2 === 0 ? m.h : m.w) / 2 - 0.09; // 中心からポート面まで
+  // ポート面基準でボックスを置く(alongSize=面に沿った幅、outSize=奥行)
+  const fbox = (
+    mat: THREE.Material, alongSize: number, ySize: number, outSize: number,
+    along: number, y: number, out: number, r = 0.015, shadow = true,
+  ): THREE.Mesh => {
+    const [x, z] = faceXZ(rot, along, out);
+    const [sx, sz] = rot % 2 === 0 ? [alongSize, outSize] : [outSize, alongSize];
+    const mm = rbox(sx, ySize, sz, mat, x, y, z, r, shadow);
+    group.add(mm);
+    return mm;
+  };
 
-  // アクセント帯(ポート面)
-  const face = m.rot % 4;
-  const am = accentMat(def.accent);
-  const bw = m.w - 0.26;
-  const bh = m.h - 0.26;
-  if (face === 0) group.add(mesh(GEO.box, am, bw, 0.12, 0.04, 0, 0.34, (m.h - 0.18) / 2 + 0.01, false));
-  else if (face === 1) group.add(mesh(GEO.box, am, 0.04, 0.12, bh, -((m.w - 0.18) / 2 + 0.01), 0.34, 0, false));
-  else if (face === 2) group.add(mesh(GEO.box, am, bw, 0.12, 0.04, 0, 0.34, -((m.h - 0.18) / 2 + 0.01), false));
-  else group.add(mesh(GEO.box, am, 0.04, 0.12, bh, (m.w - 0.18) / 2 + 0.01, 0.34, 0, false));
+  // ベースフレーム(キックプレート)
+  group.add(rbox(m.w - 0.06, 0.12, m.h - 0.06, MAT.plinth, 0, 0.06, 0, 0.02));
 
   const slotFoups: FoupView[] = [];
 
+  if (m.kind === 'stocker') {
+    // 自動倉庫: 下段キャビネット+ラックにFOUPが並ぶ(2段×3列)
+    group.add(rbox(m.w - 0.18, 0.82, m.h - 0.18, MAT.body, 0, 0.1 + 0.41, 0, 0.045));
+    const rackTop = 1.78;
+    for (const sx of [-(m.w / 2 - 0.24), m.w / 2 - 0.24]) {
+      for (const sz of [-(m.h / 2 - 0.24), m.h / 2 - 0.24]) {
+        group.add(rbox(0.06, rackTop - 0.92, 0.06, MAT.hanger,
+          sx, 0.92 + (rackTop - 0.92) / 2, sz, 0.01));
+      }
+    }
+    for (const sy of [0.96, 1.4]) {
+      group.add(rbox(m.w - 0.3, 0.05, m.h - 0.55, MAT.panel, 0, sy, 0, 0.015));
+    }
+    group.add(rbox(m.w - 0.18, 0.07, m.h - 0.3, MAT.body, 0, rackTop + 0.04, 0, 0.02));
+    for (let i = 0; i < 6; i++) {
+      const fv = buildFoup();
+      fv.group.position.set(((i % 3) - 1) * 0.55, i < 3 ? 0.99 : 1.43, 0);
+      fv.group.visible = false;
+      group.add(fv.group);
+      slotFoups.push(fv);
+    }
+  } else {
+    // 本体(面取り筐体)
+    group.add(rbox(m.w - 0.18, H, m.h - 0.18, MAT.body, 0, 0.1 + H / 2, 0, 0.045));
+  }
+
+  // アクセント帯(ポート面)
+  fbox(accentMat(def.accent), faceLen - 0.08, 0.1, 0.03, 0, 0.35, outHalf + 0.005, 0.008, false);
+
+  // 前面パネル分割(目地の影で板金に見せる)+ ラッチ金具
+  if (def.placeable && m.kind !== 'stocker' && H >= 0.8) {
+    const usable = faceLen - 0.2;
+    const n = Math.max(2, Math.round(usable / 0.95));
+    const pw = usable / n - 0.035;
+    const ph = H - 0.52;
+    for (let i = 0; i < n; i++) {
+      const along = -usable / 2 + (usable / n) * (i + 0.5);
+      fbox(MAT.panel, pw, ph, 0.05, along, 0.46 + ph / 2, outHalf - 0.01, 0.015);
+      fbox(MAT.tube, 0.05, 0.09, 0.03,
+        along + pw / 2 - 0.07, 0.46 + ph - 0.14, outHalf + 0.02, 0.008, false);
+    }
+    // 排気ルーバー(面の左下)
+    if (H >= 0.95) {
+      const la = -usable / 2 + 0.34;
+      fbox(MAT.dark, 0.5, 0.3, 0.03, la, 0.66, outHalf + 0.015, 0.01, false);
+      for (let i = 0; i < 5; i++) {
+        fbox(MAT.tube, 0.44, 0.014, 0.036, la, 0.56 + i * 0.05, outHalf + 0.02, 0.004, false);
+      }
+    }
+    // ステータススクリーン(面の右上・発光)
+    const sa = usable / 2 - 0.26;
+    const sy = 0.1 + H * 0.68;
+    fbox(MAT.dark, 0.4, 0.27, 0.035, sa, sy, outHalf + 0.012, 0.012, false);
+    const scr = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.34, 0.21),
+      new THREE.MeshStandardMaterial({
+        map: screenTex(m.kind), emissive: '#ffffff', emissiveMap: screenTex(m.kind),
+        emissiveIntensity: 2.0, roughness: 0.35,
+      }),
+    );
+    const [sx2, sz2] = faceXZ(rot, sa, outHalf + 0.032);
+    scr.position.set(sx2, sy, sz2);
+    scr.rotation.y = FACE_ROT_Y[rot];
+    group.add(scr);
+  }
+
+  // 背面の供給配管(プロセス装置のみ)
+  if (['clean', 'depo', 'etch', 'furnace', 'implant', 'metal', 'cmp'].includes(m.kind)) {
+    for (let i = 0; i < 3; i++) {
+      const along = -faceLen / 2 + 0.3 + i * 0.24;
+      const [x, z] = faceXZ(rot, along, -(outHalf + 0.045));
+      const pipe = mesh(GEO.cyl, MAT.tube, 0.055, H - 0.2, 0.055, x, 0.1 + (H - 0.2) / 2, z);
+      group.add(pipe);
+    }
+  }
+
   // 種類ごとの意匠
   if (m.kind === 'litho') {
-    group.add(mesh(GEO.box, MAT.body, m.w * 0.52, 0.42, m.h * 0.5, -m.w * 0.14, topY + 0.21, 0));
-    group.add(mesh(GEO.box, MAT.tube, m.w * 0.2, 0.2, m.h * 0.3, m.w * 0.24, topY + 0.1, 0));
-    topY += 0.42;
+    group.add(rbox(m.w * 0.5, 0.4, m.h * 0.46, MAT.body, -m.w * 0.14, topY + 0.2, 0, 0.05));
+    group.add(rbox(m.w * 0.2, 0.2, m.h * 0.3, MAT.tube, m.w * 0.24, topY + 0.1, 0, 0.04));
+    topY += 0.4;
   } else if (m.kind === 'duv') {
     // i線より大きな上部デッキ+光学塔2本
-    group.add(mesh(GEO.box, MAT.body, m.w * 0.62, 0.5, m.h * 0.56, -m.w * 0.1, topY + 0.25, 0));
+    group.add(rbox(m.w * 0.62, 0.5, m.h * 0.56, MAT.body, -m.w * 0.1, topY + 0.25, 0, 0.06));
     for (const oz of [-0.3, 0.3]) {
       group.add(mesh(GEO.cyl, MAT.tube, 0.2, 0.34, 0.2, m.w * 0.28, topY + 0.17, oz));
     }
@@ -307,14 +481,6 @@ function buildMachine(m: Machine): MachineView {
       slotFoups.push(fv);
     }
     topY += 0.5;
-  } else if (m.kind === 'stocker') {
-    for (let i = 0; i < 6; i++) {
-      const fv = buildFoup();
-      fv.group.position.set(((i % 3) - 1) * 0.55, topY, (Math.floor(i / 3) - 0.5) * 0.55);
-      fv.group.visible = false;
-      group.add(fv.group);
-      slotFoups.push(fv);
-    }
   } else if (m.kind === 'implant') {
     // ビームライン(横倒しの加速管)と高圧タンク
     const beam = mesh(GEO.cyl, MAT.tube, 0.26, m.w * 0.6, 0.26, -m.w * 0.08, topY + 0.14, 0);
@@ -329,42 +495,60 @@ function buildMachine(m: Machine): MachineView {
     }
     topY += 0.3;
   } else if (m.kind === 'cmp') {
-    // 研磨プラテン(広く平たい円盤)
+    // 研磨プラテン(広く平たい円盤)と研磨ヘッド
     group.add(mesh(GEO.cyl, MAT.tube, 0.9, 0.1, 0.9, 0, topY + 0.05, 0));
     group.add(mesh(GEO.cyl, MAT.dock, 0.3, 0.18, 0.3, 0.45, topY + 0.12, 0.35));
     topY += 0.18;
   } else if (m.kind === 'inspect') {
     group.add(mesh(GEO.cyl, MAT.tube, 0.3, 0.25, 0.3, 0, topY + 0.12, 0));
+  } else if (m.kind === 'clean') {
+    // 洗浄槽の蓋2つ
+    for (const off of [-0.35, 0.35]) {
+      group.add(mesh(GEO.cyl, MAT.tube, 0.42, 0.06, 0.42, off, topY + 0.03, 0, false));
+    }
+  } else if (m.kind === 'depo') {
+    // ガスボックスと供給塔
+    group.add(rbox(0.5, 0.32, 0.5, MAT.panel, m.w * 0.18, topY + 0.16, -m.h * 0.1, 0.04));
+    group.add(mesh(GEO.cyl, MAT.tube, 0.08, 0.5, 0.08, -m.w * 0.2, topY + 0.25, 0));
+    topY += 0.32;
+  } else if (m.kind === 'etch') {
+    // RFユニットとコイル
+    group.add(rbox(0.6, 0.28, 0.6, MAT.panel, -m.w * 0.12, topY + 0.14, 0, 0.05));
+    group.add(mesh(GEO.cyl, MAT.tube, 0.3, 0.14, 0.3, -m.w * 0.12, topY + 0.35, 0));
+    topY += 0.42;
   }
 
-  // 積層灯
+  // 積層灯(3連レンズ)
   const lights: THREE.Mesh[] = [];
   if (def.placeable) {
     const lx = m.w / 2 - 0.22;
     const lz = -(m.h / 2 - 0.22);
-    group.add(mesh(GEO.cyl, MAT.pole, 0.04, 0.46, 0.04, lx, topY + 0.23, lz, false));
+    group.add(mesh(GEO.cyl, MAT.pole, 0.035, 0.5, 0.035, lx, topY + 0.25, lz, false));
     for (let i = 0; i < 3; i++) {
-      const s = new THREE.Mesh(
-        GEO.sphere,
-        new THREE.MeshStandardMaterial({ color: LIGHT_COLORS.off, roughness: 0.4 }),
+      const lens = new THREE.Mesh(
+        GEO.cyl,
+        new THREE.MeshStandardMaterial({ color: LIGHT_COLORS.off, roughness: 0.3 }),
       );
-      s.scale.setScalar(0.11);
-      s.position.set(lx, topY + 0.5 - i * 0.13, lz);
-      group.add(s);
-      lights.push(s);
+      lens.scale.set(0.11, 0.085, 0.11);
+      lens.position.set(lx, topY + 0.53 - i * 0.095, lz);
+      group.add(lens);
+      lights.push(lens);
     }
   }
 
-  // ロードポートとドック上FOUP
+  // ロードポート(台座+SUSドックプレート)とドック上FOUP
   const portFoups: FoupView[] = [];
   for (const p of m.ports) {
     const px = p.col + 0.5 - (m.col + m.w / 2) + p.fx * 0.38;
     const pz = p.row + 0.5 - (m.row + m.h / 2) + p.fy * 0.38;
     const horizontal = p.fy !== 0;
-    group.add(mesh(
-      GEO.box, MAT.dock,
-      horizontal ? 0.52 : 0.3, 0.14, horizontal ? 0.3 : 0.52,
-      px, 0.07, pz,
+    group.add(rbox(
+      horizontal ? 0.5 : 0.3, 0.1, horizontal ? 0.3 : 0.5, MAT.plinth,
+      px, 0.05, pz, 0.015,
+    ));
+    group.add(rbox(
+      horizontal ? 0.42 : 0.24, 0.035, horizontal ? 0.24 : 0.42, MAT.tube,
+      px, 0.117, pz, 0.008, false,
     ));
     // 入出方向マーカー(小さな楔)
     const dir = p.io === 'out' ? 1 : -1;
@@ -411,8 +595,8 @@ interface VehicleView {
 
 function buildVehicle(): VehicleView {
   const group = new THREE.Group();
-  group.add(mesh(GEO.box, MAT.vehicle, 0.54, 0.2, 0.36, 0, 0, 0));
-  group.add(mesh(GEO.box, MAT.hanger, 0.44, 0.06, 0.26, 0, 0.13, 0, false));
+  group.add(rbox(0.56, 0.2, 0.38, MAT.vehicle, 0, 0, 0, 0.05));
+  group.add(rbox(0.44, 0.06, 0.26, MAT.hanger, 0, 0.13, 0, 0.02, false));
   const led = new THREE.Mesh(
     GEO.sphere,
     new THREE.MeshStandardMaterial({ color: '#c3ccd2', roughness: 0.4 }),
