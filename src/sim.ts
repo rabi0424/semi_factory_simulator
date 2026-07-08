@@ -1,6 +1,7 @@
 import {
-  MAP_COLS, MAP_ROWS, MACHINE_DEFS, MAINT_TIME,
-  MIN_CLEANLINESS, SCRAP_THRESHOLD, DEFAULT_SPAWN_INTERVAL, STOCKER_CAP,
+  MAP_COLS, MAP_ROWS, MACHINE_DEFS,
+  MIN_CLEANLINESS, SCRAP_THRESHOLD, YIELD_WINDOW,
+  DEFAULT_SPAWN_INTERVAL, STOCKER_CAP,
   FURNACE_BATCH, FURNACE_WAIT,
   FAIL_BASE, FAIL_DIRTY_COEF, REPAIR_TIME, SAVE_VERSION,
   PRODUCTS, PRODUCT_ORDER, stepsOf,
@@ -55,7 +56,6 @@ export interface Machine {
   batch: Lot[];     // 拡散炉の装填待ちロット
   batchTimer: number;
   cleanliness: number;
-  maintLeft: number;
   broken: boolean;       // 故障中
   repairLeft: number;    // >0 なら修理進行中
   jobs: number;
@@ -100,7 +100,7 @@ export class Game {
   private completions: { t: number; y: number }[] = [];
   completedCount = 0;
   scrappedCount = 0;
-  yieldSum = 0; // 完成ロットの歩留まり累計(平均歩留まり用)
+  recentYields: number[] = []; // 直近完成ロットの歩留まり(移動平均用)
   // 製品システム
   unlocked = new Set<ProductId>(['diode']);
   completedByProduct = zeroByProduct();
@@ -165,7 +165,7 @@ export class Game {
     const m: Machine = {
       id: nextId++, kind, label: `${def.short}-${serial}`, col, row, rot, w, h,
       busy: [], procLeft: 0, holdQueue: [], batch: [], batchTimer: 0,
-      cleanliness: 1, maintLeft: 0, broken: false, repairLeft: 0, jobs: 0,
+      cleanliness: 1, broken: false, repairLeft: 0, jobs: 0,
       ports: [], stall: null, storage: [],
     };
     m.ports = rotPorts(def, rot).map((p) => ({
@@ -210,18 +210,33 @@ export class Game {
     this.rail.removeTile(k);
   }
 
-  startMaintenance(m: Machine): boolean {
-    if (m.busy.length > 0 || m.batch.length > 0 || m.maintLeft > 0 || m.broken) {
-      return false;
-    }
-    m.maintLeft = MAINT_TIME;
-    return true;
-  }
-
   startRepair(m: Machine): boolean {
     if (!m.broken || m.repairLeft > 0) return false;
     m.repairLeft = REPAIR_TIME;
     return true;
+  }
+
+  // 詰まり救済: 装置に滞留しているFOUP(搬送予約のないポート上・出力待ち・
+  // 装填待ち・保管棚)を強制廃棄する。循環待ちデッドロックの脱出弁。
+  // 処理中(busy)のロットと、ビークルが向かっている予約済みポートは触らない
+  purgeMachine(m: Machine): number {
+    const victims: Lot[] = [];
+    for (const p of m.ports) {
+      if (p.foup && !p.reserved) {
+        victims.push(p.foup);
+        p.foup = null;
+      }
+    }
+    victims.push(...m.holdQueue, ...m.batch, ...m.storage);
+    m.holdQueue = [];
+    m.batch = [];
+    m.batchTimer = 0;
+    m.storage = [];
+    if (victims.length === 0) return 0;
+    this.scrappedCount += victims.length;
+    const gone = new Set(victims);
+    this.lots = this.lots.filter((l) => !gone.has(l));
+    return victims.length;
   }
 
   // ---- 更新 ----
@@ -340,7 +355,8 @@ export class Game {
           const done = p.foup;
           this.completedCount++;
           this.completedByProduct[done.product]++;
-          this.yieldSum += done.yield_;
+          this.recentYields.push(done.yield_);
+          if (this.recentYields.length > YIELD_WINDOW) this.recentYields.shift();
           this.completions.push({ t: this.simTime, y: done.yield_ });
           this.lots = this.lots.filter((l) => l !== done);
           p.foup = null;
@@ -381,16 +397,19 @@ export class Game {
       return;
     }
 
-    if (m.maintLeft > 0) {
-      m.maintLeft -= dt;
-      if (m.maintLeft <= 0) {
-        m.maintLeft = 0;
-        m.cleanliness = 1;
-      }
-      return;
-    }
-
     this.flushHold(m);
+
+    // 拡散炉のプリステージ: 処理中でも入力ポートから装填バッファへ受け入れる。
+    // 装填待ちの経過時間は処理中も進め、搬出後すぐ次バッチを焼けるようにする
+    if (m.kind === 'furnace') {
+      for (const p of m.ports) {
+        if (p.io === 'in' && p.foup && m.batch.length < FURNACE_BATCH) {
+          m.batch.push(p.foup);
+          p.foup = null;
+        }
+      }
+      m.batchTimer = m.batch.length > 0 ? m.batchTimer + dt : 0;
+    }
 
     // 処理の進行
     if (m.busy.length > 0) {
@@ -400,21 +419,10 @@ export class Game {
     }
 
     if (m.kind === 'furnace') {
-      // バッチ装填: 入力ポートから炉内へ
-      for (const p of m.ports) {
-        if (p.io === 'in' && p.foup && m.batch.length < FURNACE_BATCH) {
-          m.batch.push(p.foup);
-          p.foup = null;
-        }
-      }
-      if (m.batch.length === 0) {
-        m.batchTimer = 0;
-        return;
-      }
-      m.batchTimer += dt;
       // 満載になるか、待ち時間が上限に達したら処理開始。
       // 前バッチの搬出が済むまでは次を焼かない
       if (
+        m.batch.length > 0 &&
         (m.batch.length >= FURNACE_BATCH || m.batchTimer >= FURNACE_WAIT) &&
         m.holdQueue.length === 0
       ) {
@@ -497,16 +505,16 @@ export class Game {
         const reach = this.rail.reachableFrom(tkey(p.col, p.row));
         let sawUnreachable = false;
         let anyKind = false;        // その種類の装置が1台でも存在するか
-        let anyOperational = false; // 稼働可能(非故障・非整備)な同種装置があるか
+        let anyOperational = false; // 稼働可能(非故障)な同種装置があるか
 
         // 行き先候補: 空きin ポートを持ち、レール経路が通っている装置
-        // (整備・故障中は除く)。混雑度が最小、同点なら距離
+        // (故障中は除く)。混雑度が最小、同点なら距離
         let bestPort: Port | null = null;
         let bestScore = Infinity;
         for (const dest of this.machines) {
           if (dest.kind !== kind) continue;
           anyKind = true;
-          if (dest.maintLeft > 0 || dest.broken) continue;
+          if (dest.broken) continue;
           anyOperational = true;
           const inPort = dest.ports.find((x) => x.io === 'in' && !x.foup && !x.reserved);
           if (!inPort) continue;
@@ -548,7 +556,7 @@ export class Game {
           // 空きが出るまで待つ。滞留がプレイヤーの見落とし由来なら警告する:
           //  - noroute: 装置はあるがレールが繋がっていない
           //  - missing: その種類の装置を一台も置いていない
-          //  - down   : 同種装置はあるが全台が故障/整備中
+          //  - down   : 同種装置はあるが全台が故障中
           // 「全台が処理中で満杯」なだけの正常な滞留には警告を出さない
           if (sawUnreachable) m.stall = { kind, reason: 'noroute' };
           else if (!anyKind) m.stall = { kind, reason: 'missing' };
@@ -565,7 +573,11 @@ export class Game {
 
   getStats(): Stats {
     const throughput = this.currentThroughput();
-    const avgYield = this.completedCount > 0 ? this.yieldSum / this.completedCount : 0;
+    // 直近ロットの移動平均。全期間累計だとライン改善が数値に反映されない
+    const avgYield =
+      this.recentYields.length > 0
+        ? this.recentYields.reduce((s, y) => s + y, 0) / this.recentYields.length
+        : 0;
     const avgWait =
       this.waitSamples.length > 0
         ? this.waitSamples.reduce((s, w) => s + w, 0) / this.waitSamples.length
@@ -616,7 +628,7 @@ export class Game {
       nextId,
       completedCount: this.completedCount,
       scrappedCount: this.scrappedCount,
-      yieldSum: this.yieldSum,
+      recentYields: this.recentYields,
       completions: this.completions,
       tpHistory: this.tpHistory,
       fleetSize: this.fleet.size,
@@ -630,7 +642,7 @@ export class Game {
       machines: this.machines.map((m) => ({
         id: m.id, kind: m.kind, label: m.label,
         col: m.col, row: m.row, rot: m.rot,
-        clean: m.cleanliness, maint: m.maintLeft,
+        clean: m.cleanliness,
         broken: m.broken, repair: m.repairLeft, jobs: m.jobs,
         busy: ids(m.busy), procLeft: m.procLeft,
         hold: ids(m.holdQueue), batch: ids(m.batch), batchTimer: m.batchTimer,
@@ -674,13 +686,9 @@ export class Game {
     this.speed = data.speed;
     this.completedCount = data.completedCount;
     this.scrappedCount = data.scrappedCount;
-    // 旧データ(yieldSum無し)は直近の完成実績から概算
-    this.yieldSum =
-      data.yieldSum ??
-      (data.completions.length > 0
-        ? (data.completions.reduce((s, c) => s + c.y, 0) / data.completions.length) *
-          data.completedCount
-        : 0);
+    // 旧データ(recentYields無し)は保存済みの完成実績から復元
+    this.recentYields =
+      data.recentYields ?? data.completions.map((c) => c.y).slice(-YIELD_WINDOW);
     this.completions = data.completions;
     this.tpHistory = data.tpHistory;
     this.fleet.size = data.fleetSize;
@@ -709,7 +717,6 @@ export class Game {
       m.id = md.id;
       m.label = md.label;
       m.cleanliness = md.clean;
-      m.maintLeft = md.maint;
       m.broken = md.broken;
       m.repairLeft = md.repair;
       m.jobs = md.jobs;
@@ -769,7 +776,7 @@ export class Game {
     this.completions = [];
     this.completedCount = 0;
     this.scrappedCount = 0;
-    this.yieldSum = 0;
+    this.recentYields = [];
     this.waitSamples = [];
     this.tpHistory = [];
     this.spawnInterval = DEFAULT_SPAWN_INTERVAL;
@@ -791,7 +798,7 @@ export interface SaveData {
   nextId: number;
   completedCount: number;
   scrappedCount: number;
-  yieldSum?: number; // v2初期のセーブには無い
+  recentYields?: number[]; // v3中期以前のセーブには無い
   completions: { t: number; y: number }[];
   tpHistory: number[];
   fleetSize: number;
@@ -803,7 +810,7 @@ export interface SaveData {
   machines: {
     id: number; kind: MachineKind; label: string;
     col: number; row: number; rot: number;
-    clean: number; maint: number; broken: boolean; repair: number; jobs: number;
+    clean: number; broken: boolean; repair: number; jobs: number;
     busy: number[]; procLeft: number; hold: number[];
     batch: number[]; batchTimer: number;
     storage: number[];

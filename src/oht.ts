@@ -4,6 +4,7 @@
 import {
   TILE, OHT_SPEED, OHT_IDLE_SPEED, HOIST_TIME, START_FLEET,
   OHT_ACCEL_TILES, OHT_MIN_SPEED_FACTOR,
+  HEAT_ROUTE_WEIGHT, HEAT_ROUTE_CLAMP,
 } from './config';
 import { RailNetwork, tkey, parseKey } from './rail';
 import type { TileKey } from './rail';
@@ -105,6 +106,11 @@ export class Fleet {
     return this.vehicles.filter((v) => v.state === 'idle').length;
   }
 
+  // 渋滞回避ルーティング: 待たされた実績(渋滞ヒート)が溜まっているタイル
+  // ほど進入コストを上げ、経路探索に混雑地帯を迂回させる
+  private routeCost = (k: TileKey): number =>
+    1 + HEAT_ROUTE_WEIGHT * Math.min(this.heat.get(k) ?? 0, HEAT_ROUTE_CLAMP);
+
   isOccupied(k: TileKey): boolean {
     return this.occ.has(k);
   }
@@ -125,7 +131,7 @@ export class Fleet {
     for (const v of this.vehicles) {
       if (v.state !== 'idle') continue;
       const start = v.target ?? v.tile;
-      const p = this.rail.path(start, fromKey);
+      const p = this.rail.path(start, fromKey, this.routeCost);
       if (p && (!best || p.length < best.path.length)) best = { v, path: p };
     }
     if (best) {
@@ -272,7 +278,7 @@ export class Fleet {
           v.retryTimer -= dt;
           if (v.retryTimer > 0) return;
           v.retryTimer = 1;
-          const p = this.rail.path(v.tile, goal);
+          const p = this.rail.path(v.tile, goal, this.routeCost);
           if (!p) {
             v.stuck = true;
             return;

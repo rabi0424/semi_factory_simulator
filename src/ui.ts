@@ -40,7 +40,7 @@ export function createUI(opts: UIOpts) {
         <span class="stat"><label>完成</label><b id="stDone">0</b></span>
         <span class="stat"><label>廃棄</label><b id="stScrap">0</b></span>
         <span class="stat"><label>スループット</label><b id="stTp">0.0<i>/分</i></b></span>
-        <span class="stat"><label>歩留まり</label><b id="stYield">--</b></span>
+        <span class="stat" title="直近30ロットの移動平均"><label>歩留まり</label><b id="stYield">--</b></span>
         <span class="stat"><label>搬送待ち</label><b id="stWait">--</b></span>
         <span class="stat" id="stBrokenWrap" hidden><label>故障</label><b id="stBroken" style="color:#cc4f44">0</b></span>
         <span class="stat oht">
@@ -366,7 +366,6 @@ export function createUI(opts: UIOpts) {
   function machineStatus(m: Game['machines'][number]): string {
     if (m.broken && m.repairLeft > 0) return `修理中 残り${Math.ceil(m.repairLeft)}s`;
     if (m.broken) return '故障 — 要修理';
-    if (m.maintLeft > 0) return `整備中 残り${Math.ceil(m.maintLeft)}s`;
     if (m.busy.length > 0)
       return m.kind === 'furnace' ? `処理中 (${m.busy.length}ロット)` : '処理中';
     if (m.kind === 'furnace' && m.batch.length > 0)
@@ -396,7 +395,11 @@ export function createUI(opts: UIOpts) {
       m.ports.filter((x) => x.io === io).map((x) => (x.foup ? '●' : '○')).join('');
     const weights = PRODUCT_ORDER.map((id) => game.spawnWeights[id]).join(',');
     const stallSig = m.stall ? `${m.stall.reason}:${m.stall.kind}` : '';
-    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${stallSig}|${m.storage.length}|${m.broken}|${weights}|${game.unlocked.size}`;
+    // 強制廃棄の対象数(搬送予約のないポート上 + 出力待ち + 装填待ち + 保管棚)
+    const purgeable =
+      m.ports.filter((p) => p.foup && !p.reserved).length +
+      m.holdQueue.length + m.batch.length + m.storage.length;
+    const sig = `${m.id}|${status}|${m.cleanliness.toFixed(2)}|${m.jobs}|${portDots('in')}|${portDots('out')}|${stallSig}|${m.storage.length}|${m.broken}|${purgeable}|${weights}|${game.unlocked.size}`;
     if (sig === cardSig) return;
     cardSig = sig;
 
@@ -447,20 +450,25 @@ export function createUI(opts: UIOpts) {
     }
 
     const btns = card.querySelector('.btns')!;
+    if (m.broken) {
+      const repair = document.createElement('button');
+      repair.textContent = `修理 (${Math.ceil(m.repairLeft) || 25}秒)`;
+      repair.disabled = m.repairLeft > 0;
+      repair.addEventListener('click', () => game.startRepair(m));
+      btns.append(repair);
+    }
+    if (purgeable > 0) {
+      // デッドロック(循環待ち)の脱出弁。処理中・搬送予約済みのロットは残る
+      const purge = document.createElement('button');
+      purge.className = 'danger';
+      purge.textContent = `滞留ロット廃棄 (${purgeable})`;
+      purge.addEventListener('click', () => {
+        const n = game.purgeMachine(m);
+        if (n > 0) game.onMessage(`${m.label} の滞留ロット ${n} 件を廃棄しました`);
+      });
+      btns.append(purge);
+    }
     if (def.placeable) {
-      if (m.broken) {
-        const repair = document.createElement('button');
-        repair.textContent = `修理 (${Math.ceil(m.repairLeft) || 25}秒)`;
-        repair.disabled = m.repairLeft > 0;
-        repair.addEventListener('click', () => game.startRepair(m));
-        btns.append(repair);
-      } else if (m.kind !== 'stocker') {
-        const maint = document.createElement('button');
-        maint.textContent = 'メンテナンス';
-        maint.disabled = m.busy.length > 0 || m.batch.length > 0 || m.maintLeft > 0;
-        maint.addEventListener('click', () => game.startMaintenance(m));
-        btns.append(maint);
-      }
       const del = document.createElement('button');
       del.className = 'danger';
       del.textContent = '撤去';
@@ -468,9 +476,8 @@ export function createUI(opts: UIOpts) {
         if (game.removeMachine(m)) vs.selected = null;
       });
       btns.append(del);
-    } else {
-      btns.remove();
     }
+    if (btns.childElementCount === 0) btns.remove();
   }
 
   // ---- 定期更新 ----
@@ -481,7 +488,7 @@ export function createUI(opts: UIOpts) {
     $('#stScrap').textContent = String(st.scrapped);
     $('#stTp').innerHTML = `${st.throughput.toFixed(1)}<i>/分</i>`;
     $('#stYield').textContent =
-      st.completed > 0 ? `${(st.avgYield * 100).toFixed(1)}%` : '--';
+      st.avgYield > 0 ? `${(st.avgYield * 100).toFixed(1)}%` : '--';
     $('#stWait').textContent =
       st.avgWait > 0 ? `${st.avgWait.toFixed(1)}s` : '--';
     ($('#stBrokenWrap') as HTMLElement).hidden = st.broken === 0;
@@ -524,7 +531,7 @@ export function createUI(opts: UIOpts) {
 function stallMessage(st: StallInfo): string {
   const name = MACHINE_DEFS[st.kind].name;
   if (st.reason === 'missing') return `次工程の装置「${name}」が未設置です`;
-  if (st.reason === 'down') return `次工程の装置「${name}」が全て停止中です`;
+  if (st.reason === 'down') return `次工程の装置「${name}」が全て故障停止中です`;
   return `${name}へのレール経路がありません`;
 }
 

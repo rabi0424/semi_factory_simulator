@@ -473,11 +473,11 @@ export class View3D {
       } else {
         setLight(
           view.lights[0], LIGHT_COLORS.red,
-          m.broken ? (m.repairLeft > 0 || blink) : m.maintLeft > 0 || m.holdQueue.length > 0,
+          m.broken ? (m.repairLeft > 0 || blink) : m.holdQueue.length > 0,
         );
         setLight(
           view.lights[1], LIGHT_COLORS.amber,
-          !m.broken && m.maintLeft === 0 && m.busy.length === 0 && m.holdQueue.length === 0,
+          !m.broken && m.busy.length === 0 && m.holdQueue.length === 0,
         );
         setLight(view.lights[2], LIGHT_COLORS.green, m.busy.length > 0);
       }
@@ -800,9 +800,6 @@ function plateStatus(m: Machine): { text: string; color: string } {
     return { text: `修理中 ${Math.ceil(m.repairLeft)}s`, color: '#cc4f44' };
   }
   if (m.broken) return { text: '故障', color: '#cc4f44' };
-  if (m.maintLeft > 0) {
-    return { text: `整備中 ${Math.ceil(m.maintLeft)}s`, color: '#b07f19' };
-  }
   if (m.kind === 'stocker') {
     return { text: `保管 ${m.storage.length}/6`, color: '#5d6d76' };
   }
