@@ -36,9 +36,8 @@ game.onMessage = (msg) => {
   clearTimeout(toastTimer);
   toastTimer = window.setTimeout(() => toast.classList.remove('show'), 2200);
   // メッセージ種別ごとの通知音
-  if (msg.includes('故障しました')) sound.alarm();
-  else if (msg.includes('資金不足') || msg.includes('できません')) sound.deny();
-  else if (msg.includes('🎉') || msg.includes('🔬')) sound.unlock();
+  if (msg.includes('資金不足') || msg.includes('できません') || msg.includes('必要です')) sound.deny();
+  else if (msg.includes('🎉') || msg.includes('🔬') || msg.includes('✅')) sound.unlock();
 };
 
 // コンテキストカードのアンカー: 装置の右肩上空を画面座標へ投影
@@ -196,6 +195,10 @@ window.addEventListener('keydown', (e) => {
   }
   if (e.key === 'h' || e.key === 'H') {
     ui.toggleHeat();
+    return;
+  }
+  if (e.key === 'g' || e.key === 'G') {
+    ui.toggleTech();
     return;
   }
   // 矢印キー: 注視点を水平パン

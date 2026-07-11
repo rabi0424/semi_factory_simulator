@@ -138,7 +138,7 @@
     /* ---- 下部ホットバー ---- */
     #hotbar {
       position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
-      display: flex; gap: 5px;
+      display: flex; flex-direction: column; gap: 5px;
       background: var(--surface);
       backdrop-filter: blur(10px);
       border: 1px solid var(--line);
@@ -147,7 +147,17 @@
       box-shadow: var(--shadow-m);
       user-select: none;
       z-index: 10;
+      max-width: 96vw;
     }
+    #hotbar .catbar { display: flex; gap: 4px; justify-content: center; }
+    #hotbar .cat {
+      border: 1px solid var(--line); background: var(--surface-solid);
+      border-radius: 999px; padding: 3px 11px; font-size: 11px; cursor: pointer;
+    }
+    #hotbar .cat:hover { border-color: var(--accent); }
+    #hotbar .cat.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+    #hotbar .toolrow { display: flex; gap: 5px; justify-content: center; flex-wrap: wrap; }
+    #hotbar .sep { width: 1px; background: var(--line); margin: 2px 3px; align-self: stretch; }
     #hotbar .tool {
       position: relative;
       width: 63px; height: 68px;
@@ -244,6 +254,90 @@
     #flow .spark h2 { display: flex; justify-content: space-between; align-items: baseline; }
     #flow .spark h2 b { font-size: 12px; color: var(--ink); }
     #flow .spark canvas { display: block; }
+
+    /* ---- 技術ツリーパネル ---- */
+    #tech {
+      position: fixed; top: 56px; left: 12px; width: 268px;
+      max-height: calc(100vh - 130px); overflow-y: auto;
+      background: var(--surface);
+      backdrop-filter: blur(10px);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-l);
+      box-shadow: var(--shadow-m);
+      padding: 12px 13px;
+      user-select: none;
+      z-index: 11;
+    }
+    #tech.hidden { display: none; }
+    #tech h2 {
+      font-size: 10px; color: var(--dim); font-weight: 700;
+      letter-spacing: 0.1em; margin: 10px 0 6px; text-transform: uppercase;
+    }
+    #tech h2:first-child { margin-top: 0; }
+    #tech .active {
+      background: var(--accent-soft); border: 1px solid var(--accent);
+      border-radius: var(--radius-s); padding: 8px 9px; margin-bottom: 8px;
+    }
+    #tech .active .lbl { font-size: 11.5px; font-weight: 600; margin-bottom: 5px; }
+    #tech .active .pbar { height: 6px; background: #fff; border-radius: 999px; overflow: hidden; }
+    #tech .active .pbar i { display: block; height: 100%; background: var(--accent); }
+    #tech .active .cancel {
+      margin-top: 6px; width: 100%; font-size: 10.5px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--surface-solid);
+      border-radius: var(--radius-s); padding: 4px 0; color: var(--bad);
+    }
+    #tech .nodes { display: flex; flex-wrap: wrap; gap: 4px; }
+    #tech .titem {
+      display: flex; flex-direction: column; align-items: flex-start;
+      border: 1px solid var(--line); background: var(--surface-solid);
+      border-radius: var(--radius-s); padding: 5px 8px; font-size: 11px;
+      cursor: pointer; min-width: 60px;
+    }
+    #tech .titem:hover:not(:disabled):not(.done) { border-color: var(--accent); background: var(--accent-soft); }
+    #tech .titem small { color: var(--dim); font-size: 9px; }
+    #tech .titem.done { background: var(--surface2); color: var(--good); cursor: default; border-color: var(--line); }
+    #tech .titem.locked { opacity: 0.45; cursor: default; }
+    #tech .titem.avail { border-color: var(--accent); }
+    #tech .prod { width: 100%; margin-bottom: 4px; }
+    #tech .prod .nm { display: flex; align-items: center; gap: 5px; font-weight: 600; }
+    #tech .prod .nm .sw { width: 8px; height: 8px; border-radius: 3px; }
+
+    /* ---- ライン設定(投入ステーション)---- */
+    #ctxcard .cfg { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px; }
+    #ctxcard .cfg h3 {
+      font-size: 10px; color: var(--dim); font-weight: 700;
+      letter-spacing: 0.08em; margin-bottom: 6px; text-transform: uppercase;
+    }
+    #ctxcard .cfgrow { display: flex; align-items: center; gap: 7px; padding: 3px 0; font-size: 11.5px; }
+    #ctxcard .cfgrow > span { color: var(--dim); min-width: 44px; font-size: 11px; }
+    #ctxcard .cfgrow select {
+      flex: 1; font-family: inherit; font-size: 11.5px; padding: 3px 5px;
+      border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface-solid);
+    }
+    #ctxcard .cfgrow input[type=range] { flex: 1; accent-color: var(--accent); }
+    #ctxcard .cfgrow b { min-width: 30px; text-align: right; font-variant-numeric: tabular-nums; }
+    #ctxcard .pnl {
+      margin-top: 8px; background: var(--surface2); border-radius: var(--radius-s);
+      padding: 7px 9px; font-size: 11px;
+    }
+    #ctxcard .pnl .prow { display: flex; justify-content: space-between; padding: 1.5px 0; }
+    #ctxcard .pnl .prow b { font-variant-numeric: tabular-nums; }
+    #ctxcard .pnl .prow.profit b { color: var(--accent); font-weight: 700; }
+    #ctxcard .pnl .prow.loss b { color: var(--bad); font-weight: 700; }
+    .freshbar { height: 5px; background: var(--surface2); border-radius: 999px; overflow: hidden; flex: 1; }
+    .freshbar i { display: block; height: 100%; background: var(--good); border-radius: 999px; }
+
+    /* ---- 工程フローの省略ブロック行 ---- */
+    #flow .step .rep {
+      font-size: 9px; color: var(--accent); font-weight: 700;
+      background: var(--accent-soft); border-radius: 4px; padding: 0 4px; flex: none;
+    }
+    #flow .nodesel { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
+    #flow .nodesel select {
+      flex: 1; font-family: inherit; font-size: 11px; padding: 2px 5px;
+      border: 1px solid var(--line); border-radius: var(--radius-s); background: var(--surface-solid);
+    }
+    #flow .market { display: flex; align-items: center; gap: 6px; margin: 2px 0 7px; font-size: 10px; color: var(--dim); }
 
     /* ---- コンテキストカード ---- */
     #ctxcard {

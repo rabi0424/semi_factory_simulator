@@ -31,8 +31,11 @@ function clamp01(t: number): number {
 // 装置本体の高さ [ユニット]
 const BODY_H: Record<MachineKind, number> = {
   load: 0.45, ship: 0.45,
-  clean: 1.0, depo: 1.15, litho: 1.2, duv: 1.3, etch: 1.15,
-  furnace: 1.05, implant: 1.1, metal: 1.05, cmp: 0.85,
+  clean: 1.0, depo: 1.15,
+  litho: 1.2, krf: 1.25, arf: 1.3, euv: 1.4, euvhna: 1.5,
+  etch: 1.15,
+  furnace: 1.05, implant: 1.1, ald: 1.1,
+  metal: 1.05, cu: 1.1, cmp: 0.85,
   inspect: 0.7, stocker: 1.85,
 };
 
@@ -478,11 +481,12 @@ function buildMachine(m: Machine): MachineView {
     group.add(rbox(m.w * 0.5, 0.4, m.h * 0.46, MAT.body, -m.w * 0.14, topY + 0.2, 0, 0.05));
     group.add(rbox(m.w * 0.2, 0.2, m.h * 0.3, MAT.tube, m.w * 0.24, topY + 0.1, 0, 0.04));
     topY += 0.4;
-  } else if (m.kind === 'duv') {
-    // i線より大きな上部デッキ+光学塔2本
+  } else if (m.kind === 'krf' || m.kind === 'arf' || m.kind === 'euv' || m.kind === 'euvhna') {
+    // スキャナ: i線より大きな上部デッキ+光学塔。上位ティアほど塔が高い
+    const tierH = m.kind === 'euvhna' ? 0.6 : m.kind === 'euv' ? 0.5 : m.kind === 'arf' ? 0.42 : 0.34;
     group.add(rbox(m.w * 0.62, 0.5, m.h * 0.56, MAT.body, -m.w * 0.1, topY + 0.25, 0, 0.06));
     for (const oz of [-0.3, 0.3]) {
-      group.add(mesh(GEO.cyl, MAT.tube, 0.2, 0.34, 0.2, m.w * 0.28, topY + 0.17, oz));
+      group.add(mesh(GEO.cyl, MAT.tube, 0.2, tierH, 0.2, m.w * 0.28, topY + 0.17, oz));
     }
     topY += 0.5;
   } else if (m.kind === 'furnace') {
@@ -508,11 +512,16 @@ function buildMachine(m: Machine): MachineView {
     group.add(beam);
     group.add(mesh(GEO.sphere, MAT.tube, 0.42, 0.42, 0.42, m.w * 0.3, topY + 0.16, 0));
     topY += 0.3;
-  } else if (m.kind === 'metal') {
-    // スパッタチャンバー2基
+  } else if (m.kind === 'metal' || m.kind === 'cu') {
+    // メタル成膜(Alスパッタ / Cuめっき槽)チャンバー2基
     for (const ox of [-0.42, 0.42]) {
       group.add(mesh(GEO.cyl, MAT.tube, 0.42, 0.3, 0.42, ox, topY + 0.15, 0));
     }
+    topY += 0.3;
+  } else if (m.kind === 'ald') {
+    // ALD: 小型チャンバー+ガス供給塔
+    group.add(rbox(0.5, 0.3, 0.5, MAT.panel, m.w * 0.14, topY + 0.15, 0, 0.04));
+    group.add(mesh(GEO.cyl, MAT.tube, 0.1, 0.5, 0.1, -m.w * 0.18, topY + 0.25, 0));
     topY += 0.3;
   } else if (m.kind === 'cmp') {
     // 研磨プラテン(稼働中に回転)と研磨ヘッド
@@ -763,15 +772,14 @@ export class View3D {
         setLight(view.lights[1], LIGHT_COLORS.amber, false);
         setLight(view.lights[2], LIGHT_COLORS.green, !full);
       } else {
-        setLight(
-          view.lights[0], LIGHT_COLORS.red,
-          m.broken ? (m.repairLeft > 0 || blink) : m.holdQueue.length > 0,
-        );
+        // 赤=出力待ち滞留 / 黄=整備(PM)中または待機 / 緑=処理中。
+        // 故障は廃止したので赤点滅は無い(整備中は黄が点滅)
+        setLight(view.lights[0], LIGHT_COLORS.red, !m.pm && m.holdQueue.length > 0);
         setLight(
           view.lights[1], LIGHT_COLORS.amber,
-          !m.broken && m.busy.length === 0 && m.holdQueue.length === 0,
+          m.pm ? blink : (m.busy.length === 0 && m.holdQueue.length === 0),
         );
-        setLight(view.lights[2], LIGHT_COLORS.green, m.busy.length > 0);
+        setLight(view.lights[2], LIGHT_COLORS.green, !m.pm && m.busy.length > 0);
       }
     }
 
@@ -1178,10 +1186,7 @@ export class View3D {
 }
 
 function plateStatus(m: Machine): { text: string; color: string } {
-  if (m.broken && m.repairLeft > 0) {
-    return { text: `修理中 ${Math.ceil(m.repairLeft)}s`, color: '#cc4f44' };
-  }
-  if (m.broken) return { text: '故障', color: '#cc4f44' };
+  if (m.pm) return { text: `整備中 ${Math.ceil(m.pmLeft)}s`, color: '#b07f19' };
   if (m.kind === 'stocker') {
     return { text: `保管 ${m.storage.length}/6`, color: '#5d6d76' };
   }
