@@ -217,6 +217,7 @@ const FACE_ROT_Y = [0, -Math.PI / 2, Math.PI, Math.PI / 2];
 interface FoupView {
   group: THREE.Group;
   band: THREE.Mesh;
+  pop: number; // 出現アニメーション 0..1(1=定常)
 }
 
 function buildFoup(): FoupView {
@@ -232,12 +233,22 @@ function buildFoup(): FoupView {
   group.add(band);
   // 天面の把持フランジ
   group.add(mesh(GEO.box, MAT.foupLid, 0.13, 0.035, 0.13, 0, 0.325, 0, false));
-  return { group, band };
+  return { group, band, pop: 1 };
 }
 
 function setFoup(view: FoupView, lot: Lot | null) {
+  if (lot && !view.group.visible) view.pop = 0; // 出現の瞬間にポップ開始
   view.group.visible = lot !== null;
   if (lot) view.band.material = accentMat(PRODUCTS[lot.product].color);
+}
+
+// FOUP出現ポップ(小さく現れて弾んで定常サイズへ)
+function animFoupPop(view: FoupView, dt: number) {
+  if (view.pop >= 1) return;
+  view.pop = Math.min(1, view.pop + dt * 4);
+  const t = view.pop;
+  const back = 1 + 2.2 * Math.pow(t - 1, 3) + 1.2 * Math.pow(t - 1, 2); // easeOutBack風
+  view.group.scale.setScalar(0.75 + 0.25 * back);
 }
 
 // ---- 銘板(ネームプレート)スプライト ----
@@ -350,6 +361,10 @@ interface MachineView {
   portFoups: FoupView[];     // ポート順
   slotFoups: FoupView[];     // ストッカー棚 / 炉のチューブ
   topY: number;
+  doors: { mesh: THREE.Mesh; closedY: number }[]; // ポート上部のスライド扉
+  doorT: number;             // 扉の開閉補間 0(閉)..1(開)
+  glowMat: THREE.MeshStandardMaterial | null; // 炉チューブの発熱グロー
+  spinner: THREE.Mesh | null; // 稼働中に回る部位(CMPプラテン)
 }
 
 function buildMachine(m: Machine): MachineView {
@@ -378,6 +393,9 @@ function buildMachine(m: Machine): MachineView {
   group.add(rbox(m.w - 0.06, 0.12, m.h - 0.06, MAT.plinth, 0, 0.06, 0, 0.02));
 
   const slotFoups: FoupView[] = [];
+  const doors: { mesh: THREE.Mesh; closedY: number }[] = [];
+  let glowMat: THREE.MeshStandardMaterial | null = null;
+  let spinner: THREE.Mesh | null = null;
 
   if (m.kind === 'stocker') {
     // 自動倉庫: 下段キャビネット+ラックにFOUPが並ぶ(2段×3列)
@@ -468,12 +486,14 @@ function buildMachine(m: Machine): MachineView {
     }
     topY += 0.5;
   } else if (m.kind === 'furnace') {
+    // 焼成中に赤熱するチューブ(マテリアルはこの装置専用にクローン)
+    glowMat = MAT.tube.clone() as THREE.MeshStandardMaterial;
     const horizontal = m.w >= m.h;
     for (let i = 0; i < FURNACE_BATCH; i++) {
       const off = (i - 1) * 0.8;
       const tx = horizontal ? off : 0;
       const tz = horizontal ? 0 : off;
-      group.add(mesh(GEO.cyl, MAT.tube, 0.36, 0.5, 0.36, tx, topY + 0.25, tz));
+      group.add(mesh(GEO.cyl, glowMat, 0.36, 0.5, 0.36, tx, topY + 0.25, tz));
       const fv = buildFoup();
       fv.group.position.set(tx, topY + 0.5, tz);
       fv.group.visible = false;
@@ -495,8 +515,11 @@ function buildMachine(m: Machine): MachineView {
     }
     topY += 0.3;
   } else if (m.kind === 'cmp') {
-    // 研磨プラテン(広く平たい円盤)と研磨ヘッド
-    group.add(mesh(GEO.cyl, MAT.tube, 0.9, 0.1, 0.9, 0, topY + 0.05, 0));
+    // 研磨プラテン(稼働中に回転)と研磨ヘッド
+    spinner = mesh(GEO.cyl, MAT.tube, 0.9, 0.1, 0.9, 0, topY + 0.05, 0);
+    // 回転が分かるようパッドのマーカーを載せる
+    spinner.add(mesh(GEO.box, MAT.dark, 0.32, 1.3, 0.06, 0.22, 0.2, 0, false));
+    group.add(spinner);
     group.add(mesh(GEO.cyl, MAT.dock, 0.3, 0.18, 0.3, 0.45, topY + 0.12, 0.35));
     topY += 0.18;
   } else if (m.kind === 'inspect') {
@@ -550,6 +573,13 @@ function buildMachine(m: Machine): MachineView {
       horizontal ? 0.42 : 0.24, 0.035, horizontal ? 0.24 : 0.42, MAT.tube,
       px, 0.117, pz, 0.008, false,
     ));
+    // ポート上部のスライド扉(処理中に開く)。奥に暗いスロット
+    if (def.placeable && m.kind !== 'stocker' && H >= 0.8) {
+      const along = rot === 0 ? px : rot === 1 ? pz : rot === 2 ? -px : -pz;
+      fbox(MAT.dark, 0.36, 0.42, 0.02, along, 0.44, outHalf + 0.006, 0.008, false);
+      const door = fbox(MAT.panel, 0.42, 0.46, 0.035, along, 0.45, outHalf + 0.022, 0.012);
+      doors.push({ mesh: door, closedY: 0.45 });
+    }
     // 入出方向マーカー(小さな楔)
     const dir = p.io === 'out' ? 1 : -1;
     const wedge = mesh(
@@ -574,7 +604,10 @@ function buildMachine(m: Machine): MachineView {
   alert.position.set(m.col + m.w / 2, topY + 1.05, m.row + m.h / 2);
   alert.visible = false;
 
-  return { group, lights, plate, alert, portFoups, slotFoups, topY };
+  return {
+    group, lights, plate, alert, portFoups, slotFoups, topY,
+    doors, doorT: 0, glowMat, spinner,
+  };
 }
 
 function setLight(l: THREE.Mesh, color: string, on: boolean) {
@@ -591,6 +624,13 @@ interface VehicleView {
   led: THREE.Mesh;
   cables: THREE.Mesh[];
   foup: FoupView;
+  swing: THREE.Group; // 吊り下げ部(ケーブル+FOUP)。加減速で振り子運動する
+  yaw: number;        // 表示ヨー(進行方向へなめらかに追従)
+  sway: number;       // 振り子角
+  swayV: number;
+  lastX: number;
+  lastZ: number;
+  speed: number;
 }
 
 function buildVehicle(): VehicleView {
@@ -604,17 +644,23 @@ function buildVehicle(): VehicleView {
   led.scale.setScalar(0.07);
   led.position.set(0.2, 0.06, 0.19);
   group.add(led);
+  // 吊り下げ部は振り子用のサブグループにまとめる
+  const swing = new THREE.Group();
+  group.add(swing);
   const cables: THREE.Mesh[] = [];
   for (const ox of [-0.1, 0.1]) {
     const c = mesh(GEO.box, MAT.cable, 0.02, 1, 0.02, ox, 0, 0, false);
     c.visible = false;
-    group.add(c);
+    swing.add(c);
     cables.push(c);
   }
   const foup = buildFoup();
   foup.group.visible = false;
-  group.add(foup.group);
-  return { group, led, cables, foup };
+  swing.add(foup.group);
+  return {
+    group, led, cables, foup, swing,
+    yaw: 0, sway: 0, swayV: 0, lastX: Number.NaN, lastZ: Number.NaN, speed: 0,
+  };
 }
 
 // ---- メインの同期クラス ----
@@ -667,17 +713,22 @@ export class View3D {
     scene.add(this.selGlow);
   }
 
+  private lastVsTime = 0;
+
   sync(game: Game, vs: ViewState, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
-    this.syncMachines(game, vs, camera);
+    // アニメーション用のフレーム時間(タブ復帰などの大きな飛びはクランプ)
+    const dt = Math.min(0.05, Math.max(0, vs.time - this.lastVsTime));
+    this.lastVsTime = vs.time;
+    this.syncMachines(game, vs, camera, dt);
     this.syncRails(game);
-    this.syncVehicles(game, vs);
+    this.syncVehicles(game, vs, dt);
     this.syncHeat(game, vs);
     this.syncOverlays(game, vs);
   }
 
   // ---- 装置 ----
 
-  private syncMachines(game: Game, vs: ViewState, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
+  private syncMachines(game: Game, vs: ViewState, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera, dt: number) {
     const seen = new Set<number>();
     for (const m of game.machines) {
       seen.add(m.id);
@@ -688,7 +739,7 @@ export class View3D {
         this.scene.add(view.group);
         this.overlay.add(view.plate.sprite, view.alert);
       }
-      this.updateMachine(view, m, vs, camera);
+      this.updateMachine(view, m, vs, camera, dt);
     }
     for (const [id, view] of this.machineViews) {
       if (!seen.has(id)) {
@@ -700,7 +751,7 @@ export class View3D {
     }
   }
 
-  private updateMachine(view: MachineView, m: Machine, vs: ViewState, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera) {
+  private updateMachine(view: MachineView, m: Machine, vs: ViewState, camera: THREE.PerspectiveCamera | THREE.OrthographicCamera, dt: number) {
     const def = MACHINE_DEFS[m.kind];
     const blink = Math.sin(vs.time * 7) > 0;
 
@@ -769,6 +820,27 @@ export class View3D {
       plateMat.opacity = 1 - t;
       view.plate.sprite.visible = t < 0.98;
     }
+
+    // ---- モーション(V4) ----
+    // ポート扉: 処理中(炉は装填中も)にスライドして開く
+    const doorTarget = m.busy.length > 0 || m.batch.length > 0 ? 1 : 0;
+    view.doorT += (doorTarget - view.doorT) * Math.min(1, dt * 4);
+    for (const d of view.doors) d.mesh.position.y = d.closedY + view.doorT * 0.36;
+    // 炉の赤熱グロー(焼成中だけゆっくり脈動)
+    if (view.glowMat) {
+      const k = m.busy.length > 0 ? 0.5 + 0.3 * Math.sin(vs.time * 2.6) : 0;
+      view.glowMat.emissive.set('#ff8a4d');
+      // 点灯はゆっくり、消灯は速めに(残熱が長引くと故障と紛らわしい)
+      view.glowMat.emissiveIntensity +=
+        (k - view.glowMat.emissiveIntensity) * Math.min(1, dt * (k > 0 ? 3 : 8));
+    }
+    // CMPプラテンの回転(稼働中は高速)
+    if (view.spinner) {
+      view.spinner.rotation.y += dt * (m.busy.length > 0 ? 5 : 0.4);
+    }
+    // FOUPの出現ポップ
+    for (const fv of view.portFoups) animFoupPop(fv, dt);
+    for (const fv of view.slotFoups) animFoupPop(fv, dt);
   }
 
   // ---- レール ----
@@ -822,7 +894,7 @@ export class View3D {
 
   // ---- ビークル ----
 
-  private syncVehicles(game: Game, vs: ViewState) {
+  private syncVehicles(game: Game, vs: ViewState, dt: number) {
     const seen = new Set<number>();
     for (const v of game.fleet.vehicles) {
       seen.add(v.id);
@@ -832,7 +904,7 @@ export class View3D {
         this.vehicleViews.set(v.id, view);
         this.scene.add(view.group);
       }
-      this.updateVehicle(view, v, vs);
+      this.updateVehicle(view, v, vs, dt);
     }
     for (const [id, view] of this.vehicleViews) {
       if (!seen.has(id)) {
@@ -842,14 +914,40 @@ export class View3D {
     }
   }
 
-  private updateVehicle(view: VehicleView, v: Vehicle, vs: ViewState) {
+  private updateVehicle(view: VehicleView, v: Vehicle, vs: ViewState, dt: number) {
     const p = vehiclePos(v);
-    view.group.position.set(p.x / TILE, RAIL_Y + 0.16, p.y / TILE);
+    const px = p.x / TILE;
+    const pz = p.y / TILE;
+    view.group.position.set(px, RAIL_Y + 0.16, pz);
+
+    // ヨーは進行方向へなめらかに追従し、カーブでは内側へ軽くバンクする
+    let yawDelta = 0;
     if (v.target) {
       const a = parseKey(v.tile);
       const b = parseKey(v.target);
-      view.group.rotation.y = -Math.atan2(b.r - a.r, b.c - a.c);
+      const targetYaw = -Math.atan2(b.r - a.r, b.c - a.c);
+      let dy = targetYaw - view.yaw;
+      dy = Math.atan2(Math.sin(dy), Math.cos(dy));
+      view.yaw += dy * Math.min(1, dt * 10);
+      yawDelta = dy;
     }
+    view.group.rotation.y = view.yaw;
+    const bank = THREE.MathUtils.clamp(yawDelta * 0.5, -0.16, 0.16);
+    view.group.rotation.z += (bank - view.group.rotation.z) * Math.min(1, dt * 8);
+
+    // 吊り下げFOUPの振り子: 加減速に遅れて揺れるバネ
+    if (dt > 0) {
+      const spd = Number.isNaN(view.lastX)
+        ? 0
+        : Math.hypot(px - view.lastX, pz - view.lastZ) / dt;
+      const accel = (spd - view.speed) / Math.max(dt, 1e-3);
+      view.speed = spd;
+      view.swayV += (-view.sway * 40 - view.swayV * 6 - accel * 0.05) * dt;
+      view.sway = THREE.MathUtils.clamp(view.sway + view.swayV * dt, -0.28, 0.28);
+    }
+    view.lastX = px;
+    view.lastZ = pz;
+    view.swing.rotation.z = view.sway;
 
     // 状態LED
     const ledMat = view.led.material as THREE.MeshStandardMaterial;
@@ -883,6 +981,7 @@ export class View3D {
     if (showFoup) {
       setFoup(view.foup, v.carrying);
       view.foup.group.position.set(0, -FOUP_UNDER_VEH - drop, 0);
+      animFoupPop(view.foup, dt);
     }
   }
 

@@ -11,6 +11,7 @@ import { Game } from './sim';
 import type { StallInfo } from './sim';
 import type { ViewState, Tool } from './view';
 import { saveToLocal, clearLocal, exportFile, importFile } from './save';
+import { sound } from './sound';
 
 interface UIOpts {
   root: HTMLElement;
@@ -71,6 +72,7 @@ export function createUI(opts: UIOpts) {
         <button id="modeBtn" class="tbtn" title="2D/3D表示切替 (Shift)">3D表示</button>
         <button id="heatBtn" class="tbtn" title="渋滞ヒートマップ (H)">渋滞</button>
         <button id="flowBtn" class="tbtn on" title="製品/工程パネル (F)">工程</button>
+        <button id="muteBtn" class="tbtn" title="効果音のオン/オフ">♪</button>
         <span class="menuwrap">
           <button id="dataBtn" class="tbtn" title="セーブ/ロード">データ</button>
           <div id="dataPop" hidden>
@@ -97,6 +99,23 @@ export function createUI(opts: UIOpts) {
   `;
 
   const $ = <T extends HTMLElement>(sel: string) => root.querySelector(sel) as T;
+
+  // 全UIボタン共通のクリック音(個別の効果音は各所で追加)
+  root.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('button')) sound.click();
+  });
+
+  // 効果音のオン/オフ
+  const muteBtn = $('#muteBtn') as HTMLButtonElement;
+  const syncMute = () => {
+    muteBtn.textContent = sound.muted ? '🔇' : '♪';
+    muteBtn.classList.toggle('on', !sound.muted);
+  };
+  muteBtn.addEventListener('click', () => {
+    sound.setMuted(!sound.muted);
+    syncMute();
+  });
+  syncMute();
 
   // ---- ホットバー ----
   const toolDefs: ToolDef[] = [

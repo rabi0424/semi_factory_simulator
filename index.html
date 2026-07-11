@@ -5,128 +5,173 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>半導体工場シミュレーター</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect x='3' y='3' width='10' height='10' rx='1.5' fill='%237761a7'/%3E%3Crect x='6' y='6' width='4' height='4' fill='%23f2f4f6'/%3E%3C/svg%3E" />
+  <!-- Webフォント(取得できない環境ではシステムフォントにフォールバック) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&family=Noto+Sans+JP:wght@400;500;700&display=swap" rel="stylesheet" />
   <style>
+    /* ---- デザイントークン ---- */
     :root {
-      --ink: #243138;
-      --dim: #5d6d76;
-      --line: #d4dbdf;
-      --surface: #ffffff;
-      --surface2: #f4f6f7;
+      --ink: #232e35;
+      --dim: #64727b;
+      --line: #dde3e7;
+      --line-strong: #c6ced4;
+      --surface: rgba(255, 255, 255, 0.92);
+      --surface-solid: #ffffff;
+      --surface2: #f2f4f6;
       --accent: #7761a7;
+      --accent-soft: #efeaf7;
+      --good: #3f9c5a;
+      --warn: #d99a2b;
       --bad: #cc4f44;
+      --radius-s: 6px;
+      --radius-m: 10px;
+      --radius-l: 14px;
+      --shadow-s: 0 1px 2px rgba(35, 46, 53, 0.08), 0 2px 8px rgba(35, 46, 53, 0.06);
+      --shadow-m: 0 2px 6px rgba(35, 46, 53, 0.1), 0 10px 28px rgba(35, 46, 53, 0.14);
+      --font: "Inter", "Noto Sans JP", "Hiragino Kaku Gothic ProN", "Hiragino Sans",
+        "Yu Gothic UI", system-ui, sans-serif;
     }
     * { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; overflow: hidden; }
     body {
-      font-family: "Hiragino Kaku Gothic ProN", "Hiragino Sans", "Noto Sans JP",
-        "Yu Gothic UI", system-ui, sans-serif;
+      font-family: var(--font);
       font-size: 13px;
       color: var(--ink);
       background: #dce1e4;
+      -webkit-font-smoothing: antialiased;
     }
     b, .stat b { font-variant-numeric: tabular-nums; }
     #game { position: fixed; inset: 0; display: block; cursor: crosshair; }
-    button { font-family: inherit; color: inherit; }
+    button {
+      font-family: inherit;
+      color: inherit;
+      transition: border-color 0.12s ease, background 0.12s ease,
+        transform 0.12s ease, box-shadow 0.12s ease;
+    }
+    button:active { transform: translateY(1px); }
 
     /* ---- 上部ステータスストリップ ---- */
     #topbar {
-      position: fixed; top: 0; left: 0; right: 0; height: 42px;
+      position: fixed; top: 0; left: 0; right: 0; height: 46px;
       background: var(--surface);
+      backdrop-filter: blur(10px);
       border-bottom: 1px solid var(--line);
       display: flex; align-items: center; gap: 10px;
-      padding: 0 12px;
+      padding: 0 14px;
       user-select: none;
       white-space: nowrap;
       z-index: 10;
     }
-    .brand { font-weight: 700; font-size: 12px; letter-spacing: 0.04em; white-space: nowrap; }
+    .brand { font-weight: 700; font-size: 12.5px; letter-spacing: 0.04em; white-space: nowrap; }
     .brand .tag {
-      margin-left: 6px; font-size: 9px; font-weight: 600; color: var(--accent);
-      border: 1px solid currentColor; padding: 1px 4px; letter-spacing: 0.1em;
-      vertical-align: 1px;
+      margin-left: 7px; font-size: 9px; font-weight: 600; color: var(--accent);
+      border: 1px solid currentColor; border-radius: 999px; padding: 1.5px 7px;
+      letter-spacing: 0.12em; vertical-align: 1.5px;
     }
     .stats { display: flex; align-items: center; gap: 0; }
     .stat {
       display: flex; align-items: baseline; gap: 5px;
-      padding: 0 9px; border-left: 1px solid var(--line);
+      padding: 0 10px; border-left: 1px solid var(--line);
       white-space: nowrap;
     }
-    .stat label { font-size: 10px; color: var(--dim); letter-spacing: 0.04em; }
-    .stat b { font-size: 13px; }
-    .stat.money { border-left: none; padding-left: 0; }
-    .stat.money b { color: var(--accent); font-weight: 700; }
+    .stat label { font-size: 10px; color: var(--dim); letter-spacing: 0.05em; }
+    .stat b { font-size: 13.5px; font-weight: 600; }
     .stat b i { font-style: normal; font-size: 10px; color: var(--dim); }
+    .stat.money { border-left: none; padding-left: 0; }
+    .stat.money b { color: var(--accent); font-weight: 700; font-size: 14.5px; }
     .stat.oht button {
-      width: 20px; height: 20px; border: 1px solid var(--line); background: var(--surface2);
+      width: 21px; height: 21px; border: 1px solid var(--line);
+      border-radius: var(--radius-s); background: var(--surface2);
       cursor: pointer; font-size: 13px; line-height: 1; align-self: center;
     }
-    .stat.oht button:hover { border-color: var(--accent); }
+    .stat.oht button:hover { border-color: var(--accent); background: var(--accent-soft); }
     .grow { flex: 1; }
-    .ctl { display: flex; align-items: center; gap: 6px; }
-    .ctl .spawn { display: flex; align-items: center; gap: 5px; }
+    .ctl { display: flex; align-items: center; gap: 7px; }
+    .ctl .spawn { display: flex; align-items: center; gap: 6px; }
     .ctl .spawn label { font-size: 10px; color: var(--dim); }
-    .ctl .spawn input { width: 64px; accent-color: var(--accent); }
+    .ctl .spawn input { width: 68px; accent-color: var(--accent); }
     .ctl .spawn b { font-size: 12px; min-width: 24px; }
     .tbtn, .seg button {
-      border: 1px solid var(--line); background: var(--surface);
-      padding: 4px 7px; cursor: pointer; font-size: 12px;
-    }
-    @media (max-width: 1360px) {
-      .brand { display: none; }
+      border: 1px solid var(--line); background: var(--surface-solid);
+      padding: 5px 9px; cursor: pointer; font-size: 12px;
+      border-radius: var(--radius-s);
     }
     .tbtn:hover, .seg button:hover { border-color: var(--accent); }
-    .tbtn.on, .seg button.on { background: #efeaf7; border-color: var(--accent); color: var(--accent); }
+    .tbtn.on, .seg button.on {
+      background: var(--accent-soft); border-color: var(--accent); color: var(--accent);
+      font-weight: 600;
+    }
     .seg { display: inline-flex; }
+    .seg button { border-radius: 0; }
+    .seg button:first-child { border-radius: var(--radius-s) 0 0 var(--radius-s); }
+    .seg button:last-child { border-radius: 0 var(--radius-s) var(--radius-s) 0; }
     .seg button + button { border-left: none; }
+    @media (max-width: 1420px) {
+      .brand { display: none; }
+    }
     .menuwrap { position: relative; }
     #dataPop {
-      position: absolute; top: 30px; right: 0; width: 168px;
-      background: var(--surface); border: 1px solid var(--line);
-      box-shadow: 0 6px 20px rgba(50, 70, 80, 0.16);
-      padding: 6px; z-index: 20;
+      position: absolute; top: 34px; right: 0; width: 176px;
+      background: var(--surface-solid); border: 1px solid var(--line);
+      border-radius: var(--radius-m);
+      box-shadow: var(--shadow-m);
+      padding: 7px; z-index: 20;
       display: flex; flex-direction: column; gap: 4px;
+      animation: popIn 0.14s ease-out;
     }
     #dataPop[hidden] { display: none; }
     #dataPop button {
-      border: 1px solid var(--line); background: var(--surface);
-      padding: 6px 8px; font-size: 12px; cursor: pointer; text-align: left;
+      border: 1px solid transparent; background: none;
+      border-radius: var(--radius-s);
+      padding: 7px 9px; font-size: 12px; cursor: pointer; text-align: left;
     }
-    #dataPop button:hover { border-color: var(--accent); }
+    #dataPop button:hover { background: var(--surface2); border-color: var(--line); }
     #dataPop button.danger { color: var(--bad); }
-    #dataPop button.danger:hover { border-color: var(--bad); }
+    #dataPop button.danger:hover { background: #faeae8; border-color: #e6b7b1; }
     #dataPop button.confirming {
       background: var(--bad); color: #fff; border-color: var(--bad);
       font-weight: 600;
     }
-    #dataPop .dim { color: var(--dim); font-size: 10px; padding: 2px 2px 0; }
+    #dataPop .dim { color: var(--dim); font-size: 10px; padding: 3px 4px 1px; }
 
     /* ---- 下部ホットバー ---- */
     #hotbar {
-      position: fixed; bottom: 10px; left: 50%; transform: translateX(-50%);
-      display: flex; gap: 4px;
+      position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 5px;
       background: var(--surface);
+      backdrop-filter: blur(10px);
       border: 1px solid var(--line);
-      padding: 5px;
-      box-shadow: 0 4px 16px rgba(50, 70, 80, 0.12);
+      border-radius: var(--radius-l);
+      padding: 6px;
+      box-shadow: var(--shadow-m);
       user-select: none;
       z-index: 10;
     }
     #hotbar .tool {
       position: relative;
-      width: 62px; height: 66px;
-      border: 1px solid var(--line); background: var(--surface);
+      width: 63px; height: 68px;
+      border: 1px solid transparent;
+      border-radius: var(--radius-m);
+      background: none;
       cursor: pointer;
       display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
     }
-    #hotbar .tool:hover { border-color: var(--accent); }
+    #hotbar .tool:hover {
+      background: var(--surface2); border-color: var(--line);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-s);
+    }
     #hotbar .tool.on {
-      background: #efeaf7; border-color: var(--accent);
+      background: var(--accent-soft); border-color: var(--accent);
       box-shadow: inset 0 -2px 0 var(--accent);
     }
     #hotbar .tool i {
-      position: absolute; top: 2px; left: 4px;
-      font-style: normal; font-size: 9px; color: var(--dim);
+      position: absolute; top: 3px; left: 5px;
+      font-style: normal; font-size: 9px; font-weight: 600; color: var(--dim);
+      background: var(--surface2); border-radius: 4px; padding: 0.5px 4px;
     }
+    #hotbar .tool.on i { background: #fff; color: var(--accent); }
     #hotbar .tool span { font-size: 9.5px; color: var(--ink); letter-spacing: 0.02em; }
     #hotbar .tool em {
       font-style: normal; font-size: 8.5px; color: var(--dim);
@@ -135,138 +180,163 @@
 
     /* ---- 工程フローパネル ---- */
     #flow {
-      position: fixed; top: 52px; right: 10px; width: 218px;
+      position: fixed; top: 56px; right: 12px; width: 222px;
       background: var(--surface);
+      backdrop-filter: blur(10px);
       border: 1px solid var(--line);
-      padding: 10px 12px;
+      border-radius: var(--radius-l);
+      box-shadow: var(--shadow-s);
+      padding: 12px 13px;
       user-select: none;
       z-index: 9;
     }
     #flow.hidden { display: none; }
     #flow h2 {
-      font-size: 10px; color: var(--dim); font-weight: 600;
-      letter-spacing: 0.08em; margin-bottom: 7px;
+      font-size: 10px; color: var(--dim); font-weight: 700;
+      letter-spacing: 0.1em; margin-bottom: 8px; text-transform: uppercase;
     }
-    #prodTabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+    #prodTabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 9px; }
     .ptab {
       display: flex; align-items: center; gap: 4px;
-      border: 1px solid var(--line); background: var(--surface);
-      padding: 3px 7px; font-size: 11px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--surface-solid);
+      border-radius: 999px;
+      padding: 3px 9px; font-size: 11px; cursor: pointer;
     }
-    .ptab .sw { width: 8px; height: 8px; }
+    .ptab .sw { width: 8px; height: 8px; border-radius: 3px; }
     .ptab small { color: var(--dim); font-size: 9.5px; }
     .ptab:hover:not(:disabled) { border-color: var(--accent); }
-    .ptab.on { background: #efeaf7; border-color: var(--accent); }
-    .ptab.locked { opacity: 0.55; cursor: default; }
+    .ptab.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+    .ptab.locked { opacity: 0.5; cursor: default; }
     #flow .node {
-      display: flex; align-items: baseline; gap: 5px; margin: 1px 0 6px;
-      padding-bottom: 5px; border-bottom: 1px dashed var(--line);
+      display: flex; align-items: baseline; gap: 5px; margin: 1px 0 7px;
+      padding-bottom: 6px; border-bottom: 1px dashed var(--line);
       font-size: 10px; color: var(--dim); letter-spacing: 0.03em;
     }
-    #flow .node b { font-size: 12px; color: var(--accent); letter-spacing: 0.02em; }
+    #flow .node b { font-size: 12.5px; color: var(--accent); letter-spacing: 0.02em; }
     #flow .node small { margin-left: auto; color: var(--dim); font-size: 10px; }
     #flow .othergen {
-      margin-top: 6px; font-size: 10px; color: var(--dim);
-      border-top: 1px dashed var(--line); padding-top: 5px;
+      margin-top: 7px; font-size: 10px; color: var(--dim);
+      border-top: 1px dashed var(--line); padding-top: 6px;
     }
     #flow .step {
-      display: flex; align-items: center; gap: 6px; padding: 2.5px 3px;
-      margin: 0 -3px; cursor: pointer; border: 1px solid transparent;
+      display: flex; align-items: center; gap: 6px; padding: 3px 5px;
+      margin: 0 -5px; cursor: pointer;
+      border: 1px solid transparent; border-radius: var(--radius-s);
     }
-    #flow .step:hover { border-color: var(--line); }
-    #flow .step.hl { background: #efeaf7; border-color: var(--accent); }
-    #flow .sw { width: 8px; height: 8px; flex: none; }
+    #flow .step:hover { background: var(--surface2); border-color: var(--line); }
+    #flow .step.hl { background: var(--accent-soft); border-color: var(--accent); }
+    #flow .sw { width: 8px; height: 8px; border-radius: 3px; flex: none; }
     #flow .nm { font-size: 11.5px; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     #flow .util {
       font-size: 10px; min-width: 28px; text-align: right; flex: none;
-      color: var(--dim); font-variant-numeric: tabular-nums;
+      color: var(--dim); font-variant-numeric: tabular-nums; font-weight: 600;
     }
     #flow .bar {
       width: 36px; height: 5px; background: var(--surface2);
-      overflow: hidden; flex: none;
+      border-radius: 999px; overflow: hidden; flex: none;
     }
-    #flow .bar i { display: block; height: 100%; background: var(--accent); }
+    #flow .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
     #flow .cnt { font-size: 11.5px; min-width: 16px; text-align: right; flex: none; }
     #flow .legend {
-      margin-top: 5px; font-size: 9px; color: var(--dim); letter-spacing: 0.02em;
+      margin-top: 6px; font-size: 9px; color: var(--dim); letter-spacing: 0.02em;
     }
-    #flow .spark { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 8px; }
+    #flow .spark { margin-top: 10px; border-top: 1px solid var(--line); padding-top: 9px; }
     #flow .spark h2 { display: flex; justify-content: space-between; align-items: baseline; }
     #flow .spark h2 b { font-size: 12px; color: var(--ink); }
     #flow .spark canvas { display: block; }
 
     /* ---- コンテキストカード ---- */
     #ctxcard {
-      position: fixed; width: 224px;
-      background: var(--surface);
+      position: fixed; width: 228px;
+      background: var(--surface-solid);
       border: 1px solid var(--line);
       border-top: 3px solid var(--accent);
-      box-shadow: 0 6px 20px rgba(50, 70, 80, 0.16);
-      padding: 10px 12px 12px;
+      border-radius: var(--radius-m);
+      box-shadow: var(--shadow-m);
+      padding: 11px 13px 13px;
       z-index: 11;
+      animation: cardIn 0.16s ease-out;
+    }
+    @keyframes cardIn {
+      from { opacity: 0; transform: translateY(5px) scale(0.985); }
+      to { opacity: 1; transform: none; }
+    }
+    @keyframes popIn {
+      from { opacity: 0; transform: translateY(-4px); }
+      to { opacity: 1; transform: none; }
     }
     #ctxcard .head {
       display: flex; justify-content: space-between; align-items: baseline;
-      margin-bottom: 7px;
+      margin-bottom: 8px;
     }
     #ctxcard .head .nm { font-weight: 700; font-size: 13px; }
-    #ctxcard .head .lbl { font-size: 10px; color: var(--dim); letter-spacing: 0.05em; }
+    #ctxcard .head .lbl {
+      font-size: 10px; color: var(--dim); letter-spacing: 0.06em;
+      background: var(--surface2); border-radius: 4px; padding: 1px 6px;
+    }
     #ctxcard .row {
       display: flex; align-items: center; gap: 8px;
-      padding: 2.5px 0; font-size: 12px;
+      padding: 3px 0; font-size: 12px;
     }
     #ctxcard .row span:first-child { color: var(--dim); font-size: 11px; min-width: 44px; }
     #ctxcard .row b { margin-left: auto; }
     #ctxcard .gauge {
-      flex: 1; height: 5px; background: var(--surface2); overflow: hidden;
+      flex: 1; height: 5px; background: var(--surface2);
+      border-radius: 999px; overflow: hidden;
     }
-    #ctxcard .gauge i { display: block; height: 100%; }
+    #ctxcard .gauge i { display: block; height: 100%; border-radius: 999px; transition: width 0.2s ease; }
     #ctxcard .alert {
-      margin-top: 6px; padding: 5px 8px; font-size: 11px;
+      margin-top: 7px; padding: 6px 9px; font-size: 11px;
+      border-radius: var(--radius-s);
       color: #8a6414; background: #faf3e0; border: 1px solid #ecd9a8;
     }
     #ctxcard .alert.bad {
       color: #93392f; background: #faeae8; border-color: #e6b7b1;
     }
-    #ctxcard .mix { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 6px; }
+    #ctxcard .mix { margin-top: 9px; border-top: 1px solid var(--line); padding-top: 7px; }
     #ctxcard .mix h3 {
-      font-size: 10px; color: var(--dim); font-weight: 600;
-      letter-spacing: 0.06em; margin-bottom: 4px;
+      font-size: 10px; color: var(--dim); font-weight: 700;
+      letter-spacing: 0.08em; margin-bottom: 4px; text-transform: uppercase;
     }
     #ctxcard .mixrow {
-      display: flex; align-items: center; gap: 6px; padding: 2.5px 0; font-size: 12px;
+      display: flex; align-items: center; gap: 6px; padding: 3px 0; font-size: 12px;
     }
-    #ctxcard .mixrow .sw { width: 8px; height: 8px; flex: none; }
+    #ctxcard .mixrow .sw { width: 8px; height: 8px; border-radius: 3px; flex: none; }
     #ctxcard .mixrow .nm { flex: 1; }
     #ctxcard .mixrow b { min-width: 14px; text-align: center; }
     #ctxcard .mixrow .mbtn {
-      width: 20px; height: 20px; border: 1px solid var(--line);
+      width: 21px; height: 21px; border: 1px solid var(--line);
+      border-radius: var(--radius-s);
       background: var(--surface2); cursor: pointer; font-size: 13px; line-height: 1;
     }
-    #ctxcard .mixrow .mbtn:hover { border-color: var(--accent); }
-    #ctxcard .btns { display: flex; gap: 6px; margin-top: 10px; }
+    #ctxcard .mixrow .mbtn:hover { border-color: var(--accent); background: var(--accent-soft); }
+    #ctxcard .btns { display: flex; gap: 6px; margin-top: 11px; }
     #ctxcard .btns button {
-      flex: 1; padding: 5px 0; font-size: 12px; cursor: pointer;
-      border: 1px solid var(--line); background: var(--surface);
+      flex: 1; padding: 6px 0; font-size: 12px; cursor: pointer;
+      border: 1px solid var(--line); background: var(--surface-solid);
+      border-radius: var(--radius-s);
     }
-    #ctxcard .btns button:hover:not(:disabled) { border-color: var(--accent); }
+    #ctxcard .btns button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
     #ctxcard .btns button:disabled { opacity: 0.4; cursor: default; }
     #ctxcard .btns button.danger { color: var(--bad); }
-    #ctxcard .btns button.danger:hover { border-color: var(--bad); }
+    #ctxcard .btns button.danger:hover:not(:disabled) { border-color: var(--bad); background: #faeae8; }
 
     /* ---- トースト ---- */
     #toast {
-      position: fixed; left: 50%; bottom: 84px; transform: translateX(-50%);
-      background: rgba(36, 49, 56, 0.92); color: #f2f4f6;
-      padding: 7px 16px; font-size: 12px;
-      opacity: 0; transition: opacity 0.25s; pointer-events: none;
+      position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%) translateY(6px);
+      background: rgba(30, 40, 47, 0.94); color: #f2f4f6;
+      padding: 8px 18px; font-size: 12.5px;
+      border-radius: 999px;
+      box-shadow: var(--shadow-m);
+      opacity: 0; transition: opacity 0.22s ease, transform 0.22s ease;
+      pointer-events: none;
       white-space: nowrap;
       z-index: 12;
     }
-    #toast.show { opacity: 1; }
+    #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
     @media (prefers-reduced-motion: reduce) {
-      #toast { transition: none; }
+      #toast, button, #ctxcard, #dataPop { transition: none; animation: none; }
     }
   </style>
 </head>
